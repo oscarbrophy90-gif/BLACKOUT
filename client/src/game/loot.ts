@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import {
   AMMO_LABEL, ARMOR_BY_ID, HEAL_BY_ID, RARITY_COLOR, RARITY_LABEL, RARITY_RANK,
-  WEAPON_BY_ID, crateTierForGrade, rollCrate, rollGroundItem,
+  WEAPON_BY_ID, crateTierForGrade, dps, rollCrate, rollGroundItem,
 } from '@blackout/shared'
 import type { CrateTier, ItemKind, Rarity, Rng } from '@blackout/shared'
 import { emit, on } from '../core/events.ts'
@@ -36,6 +36,8 @@ export interface CrateInst {
   lid: THREE.Mesh
   beam: THREE.Mesh | null
   falling: boolean
+  /** Rolled at open-time; spilled by update() when the lid finishes. */
+  pending: ItemKind[] | null
 }
 
 const TIER_RARITY: Record<CrateTier, Rarity> = {
@@ -114,26 +116,26 @@ export class LootSystem {
     }
   }
 
+  private dark = false
+  private lootBeams = new Map<number, THREE.Mesh>()
+
   private setDark(dark: boolean): void {
+    this.dark = dark
     // Mil-Spec and better sends up a light column only the dark reveals —
     // Blackouts are the aggressor's (and looter's) window.
     if (dark) {
-      for (const f of this.floor.values()) {
-        if (RARITY_RANK[f.rarity] >= RARITY_RANK.legendary) {
-          const beam = this.fx.beam(f.x, f.y, f.z, RARITY_COLOR[f.rarity], 0.5, 60, 0)
-          if (beam) this.lootBeams.push(beam)
-        }
-      }
+      for (const f of this.floor.values()) this.maybeBeam(f)
     } else {
-      this.stopLootBeams()
+      for (const b of this.lootBeams.values()) this.fx.stopBeam(b)
+      this.lootBeams.clear()
     }
   }
 
-  private lootBeams: THREE.Mesh[] = []
-
-  private stopLootBeams(): void {
-    for (const b of this.lootBeams) this.fx.stopBeam(b)
-    this.lootBeams.length = 0
+  private maybeBeam(f: FloorLoot): void {
+    if (!this.dark || this.lootBeams.has(f.id)) return
+    if (RARITY_RANK[f.rarity] < RARITY_RANK.legendary) return
+    const beam = this.fx.beam(f.x, f.y, f.z, RARITY_COLOR[f.rarity], 0.5, 60, 0)
+    if (beam) this.lootBeams.set(f.id, beam)
   }
 
   spawnFloor(item: ItemKind, x: number, z: number, y?: number): FloorLoot | null {
@@ -149,13 +151,24 @@ export class LootSystem {
     this.inst.setColorAt(slot, this.color.set(RARITY_COLOR[rarity]))
     this.inst.instanceMatrix.needsUpdate = true
     if (this.inst.instanceColor) this.inst.instanceColor.needsUpdate = true
+    this.maybeBeam(loot)
     return loot
+  }
+
+  /** Read without taking — pickup logic decides first, takes second. */
+  getFloor(id: number): FloorLoot | null {
+    return this.floor.get(id) ?? null
   }
 
   takeFloor(id: number): ItemKind | null {
     const loot = this.floor.get(id)
     if (!loot) return null
     this.floor.delete(id)
+    const beam = this.lootBeams.get(id)
+    if (beam) {
+      this.fx.stopBeam(beam)
+      this.lootBeams.delete(id)
+    }
     this.mat4.makeScale(0, 0, 0)
     this.inst.setMatrixAt(loot.slot, this.mat4)
     this.inst.instanceMatrix.needsUpdate = true
@@ -191,6 +204,7 @@ export class LootSystem {
       id: this.nextId++, tier, x, y, z, state: 'closed', t: 0, group, lid,
       beam: falling ? this.fx.beam(x, y, z, c, 1.2, 200, 0) : null,
       falling,
+      pending: null,
     }
     this.crates.set(crate.id, crate)
     return crate
@@ -234,33 +248,36 @@ export class LootSystem {
     c.state = 'opening'
     c.t = 0
     audio.crateOpen(TIER_RARITY[c.tier])
-    // Contents resolve when the lid finishes swinging.
-    const items = rollCrate(rng, c.tier)
-    window.setTimeout(() => {
-      if (!this.crates.has(id)) return
-      c.state = 'open'
-      if (c.beam) {
-        this.fx.stopBeam(c.beam)
-        c.beam = null
-      }
-      this.fx.beam(c.x, c.y, c.z, RARITY_COLOR[TIER_RARITY[c.tier]], 0.8, 40, 1.2)
-      items.forEach((item, i) => {
-        const ang = (i / items.length) * Math.PI * 2 + c.group.rotation.y
-        this.spawnFloor(item, c.x + Math.cos(ang) * 1.3, c.z + Math.sin(ang) * 1.3)
-      })
-      emit('crateOpened', { tier: c.tier })
-    }, 900)
+    // Contents roll now, spill when update() finishes the lid swing — which
+    // means opening respects pause and cannot outlive the match.
+    c.pending = rollCrate(rng, c.tier)
     return true
   }
 
-  /** Bots vacuum the best weapon near them; abstractly, no animations. */
-  botTakeBestWeaponNear(x: number, z: number, radius: number): ItemKind | null {
+  /** Bots crack crates too — same flow, same odds, same ceremony. */
+  botOpenCrateNear(x: number, z: number, radius: number, rng: Rng): boolean {
+    for (const c of this.crates.values()) {
+      if (c.state !== 'closed' || c.falling) continue
+      if (Math.hypot(c.x - x, c.z - z) <= radius) return this.openCrate(c.id, rng)
+    }
+    return false
+  }
+
+  /** Bots take a weapon only when it actually beats what they carry. */
+  botTakeBestWeaponNear(x: number, z: number, radius: number, minPower: number): ItemKind | null {
     let best: FloorLoot | null = null
+    let bestPower = minPower
     for (const f of this.floor.values()) {
       if (f.item.type !== 'weapon') continue
       const d = Math.hypot(f.x - x, f.z - z)
       if (d > radius) continue
-      if (!best || RARITY_RANK[f.rarity] > RARITY_RANK[best.rarity]) best = f
+      const def = WEAPON_BY_ID.get(f.item.weaponId)
+      if (!def) continue
+      const power = dps(def, f.item.rarity)
+      if (power > bestPower) {
+        best = f
+        bestPower = power
+      }
     }
     return best ? this.takeFloor(best.id) : null
   }
@@ -293,6 +310,21 @@ export class LootSystem {
       if (c.state === 'opening') {
         c.t += dt
         c.lid.rotation.x = -Math.min(1.9, c.t * 2.4)
+        if (c.t >= 0.9 && c.pending) {
+          const items = c.pending
+          c.pending = null
+          c.state = 'open'
+          if (c.beam) {
+            this.fx.stopBeam(c.beam)
+            c.beam = null
+          }
+          this.fx.beam(c.x, c.y, c.z, RARITY_COLOR[TIER_RARITY[c.tier]], 0.8, 40, 1.2)
+          items.forEach((item, i) => {
+            const ang = (i / items.length) * Math.PI * 2 + c.group.rotation.y
+            this.spawnFloor(item, c.x + Math.cos(ang) * 1.3, c.z + Math.sin(ang) * 1.3)
+          })
+          emit('crateOpened', { tier: c.tier })
+        }
       }
     }
   }

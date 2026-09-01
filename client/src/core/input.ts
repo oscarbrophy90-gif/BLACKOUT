@@ -64,11 +64,14 @@ export class Input {
     document.removeEventListener('pointerlockchange', this.lockchange)
   }
 
-  async requestLock(el: HTMLElement): Promise<void> {
+  /** Resolves false when the browser refused (no user activation, or the
+   *  user just hit Esc) so the caller can show a "click to play" prompt. */
+  async requestLock(el: HTMLElement): Promise<boolean> {
     try {
       await el.requestPointerLock()
+      return true
     } catch {
-      // Browsers throw if the user just hit Esc; the pause screen handles it.
+      return false
     }
   }
 

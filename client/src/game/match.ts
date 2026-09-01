@@ -86,7 +86,6 @@ export class Match {
   private metrics = emptyMetrics()
   private weaponKills: Record<string, number> = {}
   private kills = 0
-  private headshotKillsPending = 0
   private matchTime = 0
   private landed = false
   private graceLeft = GRACE_BEFORE_ZONE
@@ -140,8 +139,9 @@ export class Match {
     this.controller.invertY = profile.settings.invertY
     audio.setVolume(profile.settings.volume)
 
-    // Drop in.
-    this.controller.pos.set(dropX, 320, dropZ)
+    // Drop in — onto open ground, never a rooftop or a building footprint.
+    const clear = this.col.findClearGround(dropX, dropZ)
+    this.controller.pos.set(clear.x, 320, clear.z)
     this.controller.frozen = true
 
     this.wire()
@@ -232,16 +232,10 @@ export class Match {
         this.kills++
         this.metrics.kills++
         if (k.inBlackout) this.metrics.blackoutKills++
-        if (this.headshotKillsPending > 0) {
-          this.metrics.headshotKills++
-          this.headshotKillsPending--
-        }
+        if (k.headshot) this.metrics.headshotKills++
         const def = [...WEAPON_BY_ID.values()].find((d) => d.name === k.weaponName)
         if (def) this.weaponKills[def.id] = (this.weaponKills[def.id] ?? 0) + 1
       }
-    }))
-    this.unsubs.push(on('hitmarker', ({ killed, headshot }) => {
-      if (killed && headshot) this.headshotKillsPending++
     }))
   }
 
@@ -290,7 +284,10 @@ export class Match {
       cratesOpened: this.metrics.cratesOpened,
       headshotKills: this.metrics.headshotKills,
     }
-    const winnerName = won ? this.profile.name : this.bots.aliveBots()[0]?.name ?? 'nobody'
+    // Only name a winner when the match actually resolved — an abandoned
+    // contract has no last light yet.
+    const resolved = won || (!this.player.alive && this.bots.aliveCount() <= 1)
+    const winnerName = won ? this.profile.name : resolved ? this.bots.aliveBots()[0]?.name ?? 'nobody' : ''
     if (won) audio.victory()
     this.onEnded?.({
       outcome,
@@ -302,11 +299,16 @@ export class Match {
     })
   }
 
-  /** Full teardown: scene, listeners, viewmodel. */
+  /** Full teardown: scene, listeners, viewmodel, ambience beds. */
   dispose(): void {
     for (const u of this.unsubs) u()
     this.loot.dispose()
     clearAllHandlers()
+    // The audio singleton outlives the match — silence its continuous beds
+    // or a blackout drone follows the player into the lobby.
+    audio.setBlackout(false)
+    audio.setWind(0)
+    audio.setZoneProximity(0)
     this.engine.camera.remove(this.viewmodel.group)
     this.engine.camera.clear()
     this.engine.clearScene()
@@ -374,6 +376,8 @@ export class Match {
       if (this.bots.player) {
         this.bots.player.moveFactor = this.controller.moveFactor
         this.bots.player.crouching = this.controller.crouching
+        // Crouching genuinely shrinks the hitbox and hides the head.
+        this.bots.player.eyeHeight = this.controller.eyeHeight()
       }
       this.bots.update(dt, time, cam.position)
       this.zoneTickAcc += dt
@@ -461,13 +465,12 @@ export class Match {
       if (this.loot.openCrate(near.id, this.rng)) this.metrics.cratesOpened++
       return
     }
+    // Decide first, take second — a full pouch must never eat the item.
+    const floor = this.loot.getFloor(near.id)
+    if (!floor || !this.player.inv.canTake(floor.item)) return
+    const origin = { x: floor.x, y: floor.y, z: floor.z }
     const lootItem = this.loot.takeFloor(near.id)
     if (!lootItem) return
-    if (!this.player.inv.canTake(lootItem)) {
-      // Put it back rather than eating it.
-      this.loot.spawnFloor(lootItem, this.controller.pos.x, this.controller.pos.z)
-      return
-    }
     const { label } = itemLabel(lootItem)
     switch (lootItem.type) {
       case 'weapon': {
@@ -483,12 +486,20 @@ export class Match {
         if (RARITY_RANK[lootItem.rarity] >= RARITY_RANK.rare) this.metrics.rareWeaponsFound++
         break
       }
-      case 'ammo':
-        this.player.inv.addAmmo(lootItem.ammo, lootItem.amount)
+      case 'ammo': {
+        const taken = this.player.inv.addAmmo(lootItem.ammo, lootItem.amount)
+        if (taken < lootItem.amount) {
+          this.loot.spawnFloor({ ...lootItem, amount: lootItem.amount - taken }, origin.x, origin.z, origin.y)
+        }
         break
-      case 'heal':
-        this.player.inv.addHeal(lootItem.healId, lootItem.amount)
+      }
+      case 'heal': {
+        const taken = this.player.inv.addHeal(lootItem.healId, lootItem.amount)
+        if (taken < lootItem.amount) {
+          this.loot.spawnFloor({ ...lootItem, amount: lootItem.amount - taken }, origin.x, origin.z, origin.y)
+        }
         break
+      }
       case 'armor':
         this.player.applyArmorPickup(lootItem.armorId)
         break
@@ -498,7 +509,9 @@ export class Match {
   }
 
   private updateSpectate(): void {
-    if (this.input.mouseJustPressed(0)) {
+    const current = this.spectateTarget ? this.bots.bots.get(this.spectateTarget) : null
+    // Retarget automatically when the spectated Linewalker goes down.
+    if ((!current || !current.alive || this.input.mouseJustPressed(0))) {
       const alive = this.bots.aliveBots()
       if (alive.length > 0) {
         const idx = alive.findIndex((b) => b.id === this.spectateTarget)

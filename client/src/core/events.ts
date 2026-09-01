@@ -1,7 +1,7 @@
 // One tiny event bus decouples gameplay systems from the HUD and audio.
 
 export interface GameEvents {
-  kill: { killerName: string; victimName: string; weaponName: string; inBlackout: boolean; victimIsPlayer: boolean; killerIsPlayer: boolean }
+  kill: { killerName: string; victimName: string; weaponName: string; inBlackout: boolean; victimIsPlayer: boolean; killerIsPlayer: boolean; headshot: boolean }
   hitmarker: { killed: boolean; headshot: boolean }
   playerDamaged: { angle: number; amount: number }
   pickup: { label: string; rarityColor: string }

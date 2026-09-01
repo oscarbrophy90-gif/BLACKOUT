@@ -1,6 +1,7 @@
 import './styles.css'
 import { audio } from './core/audio.ts'
 import { Engine } from './core/engine.ts'
+import { emit } from './core/events.ts'
 import { Input } from './core/input.ts'
 import { Match } from './game/match.ts'
 import type { MatchResult } from './game/match.ts'
@@ -23,6 +24,7 @@ audio.volume = profile.settings.volume
 let match: Match | null = null
 let hud: Hud | null = null
 let closePause: (() => void) | null = null
+let closeDeath: (() => void) | null = null
 let deathOverlayOpen = false
 
 const lobby = new Lobby(ui, profile, startMatchFlow)
@@ -50,15 +52,17 @@ function beginMatch(dropX: number, dropZ: number): void {
   match.onPlayerDied = (info) => {
     deathOverlayOpen = true
     input.releaseLock()
-    deathScreen(
+    closeDeath = deathScreen(
       ui,
       info,
       () => {
         deathOverlayOpen = false
+        closeDeath = null
         void input.requestLock(canvas)
       },
       () => {
         deathOverlayOpen = false
+        closeDeath = null
         match?.finishNow()
       },
     )
@@ -75,13 +79,21 @@ function beginMatch(dropX: number, dropZ: number): void {
     }
     input.endFrame()
   })
-  void input.requestLock(canvas)
+  // The auto-drop path arrives here without user activation, where the
+  // browser refuses pointer lock — tell the player what to do about it.
+  void input.requestLock(canvas).then((ok) => {
+    if (!ok) emit('toast', { text: 'CLICK TO TAKE CONTROL', strong: true })
+  })
 }
 
 function endMatch(result: MatchResult): void {
   if (!match) return
   input.releaseLock()
   closePause?.()
+  closePause = null
+  closeDeath?.()
+  closeDeath = null
+  deathOverlayOpen = false
   const { rewards, completed } = profile.recordMatch(result.outcome, result.metrics, result.weaponKills)
   engine.stop()
   hud?.dispose()

@@ -109,6 +109,31 @@ export class CollisionWorld {
   }
 
   /**
+   * Nearest spot to (x, z) that is on open terrain — not on a roof, not
+   * inside a structure footprint, not in the sea. Used for drop landings
+   * and bot spawns so nobody starts trapped on (or in) a building.
+   */
+  findClearGround(x: number, z: number, maxRadius = 60): { x: number; z: number } {
+    const clear = (px: number, pz: number): boolean => {
+      const terrain = heightAt(px, pz)
+      if (terrain < 0.5) return false
+      const g = this.groundHeight(px, pz, 500, 0.6)
+      return g - terrain < 0.5
+    }
+    if (clear(x, z)) return { x, z }
+    for (let r = 4; r <= maxRadius; r += 4) {
+      const steps = Math.max(8, Math.floor(r * 1.2))
+      for (let i = 0; i < steps; i++) {
+        const a = (i / steps) * Math.PI * 2 + r
+        const px = x + Math.cos(a) * r
+        const pz = z + Math.sin(a) * r
+        if (clear(px, pz)) return { x: px, z: pz }
+      }
+    }
+    return { x, z }
+  }
+
+  /**
    * Raycast for bullets and bot vision. Checks boxes (slab test) and marches
    * the terrain. Returns hit distance, or null for a clear line.
    */

@@ -58,6 +58,7 @@ export interface Bot {
   strafeT: number
   healT: number
   stepT: number
+  stallT: number
   decideT: number
   fight: { otherId: string; tLeft: number } | null
   alive: boolean
@@ -113,6 +114,9 @@ export class BotManager implements TargetField {
         x = (this.rng() - 0.5) * ISLAND_RADIUS
         z = (this.rng() - 0.5) * ISLAND_RADIUS
       }
+      const clear = this.col.findClearGround(x, z)
+      x = clear.x
+      z = clear.z
       const name = makeCallsign(this.rng, taken)
       taken.add(name)
       const skill = 0.3 + this.rng() * 0.62
@@ -141,6 +145,7 @@ export class BotManager implements TargetField {
         strafeT: 0,
         healT: 0,
         stepT: 0,
+        stallT: 0,
         decideT: this.rng(),
         fight: null,
         alive: true,
@@ -170,7 +175,8 @@ export class BotManager implements TargetField {
     const out: HitTarget[] = []
     for (const b of this.bots.values()) {
       if (b.alive && b.embodied) {
-        out.push({ id: b.id, x: b.pos.x, y: b.pos.y, z: b.pos.z, eyeHeight: 1.55 })
+        // 1.62 matches the rendered head, so the helmet is hittable.
+        out.push({ id: b.id, x: b.pos.x, y: b.pos.y, z: b.pos.z, eyeHeight: 1.62 })
       }
     }
     return out
@@ -225,9 +231,9 @@ export class BotManager implements TargetField {
       inBlackout: this.dark,
       victimIsPlayer: false,
       killerIsPlayer: attackerId === 'player',
+      headshot,
     })
     emit('aliveChanged', { alive: this.aliveCount() + (this.player?.alive ? 1 : 0) })
-    void headshot
   }
 
   /** Zone damage for all bots; the match calls this once per second. */
@@ -281,12 +287,17 @@ export class BotManager implements TargetField {
     const alive = this.aliveBots()
     // The endgame embodies everyone left, whatever the distance.
     const endgame = alive.length + (this.player?.alive ? 1 : 0) <= 12
+    const enter2 = EMBODY_RADIUS * EMBODY_RADIUS
+    // Hysteresis: an embodied bot keeps its body until well past the enter
+    // radius, so boundary-straddlers don't blink in and out every half second.
+    const exit2 = enter2 * 1.5
     const ranked = alive
       .map((b) => ({ b, d: b.pos.distanceToSquared(cameraPos) }))
-      .sort((a, z) => a.d - z.d)
+      .sort((a, z) => (a.d - (a.b.embodied ? enter2 * 0.2 : 0)) - (z.d - (z.b.embodied ? enter2 * 0.2 : 0)))
     let n = 0
     for (const { b, d } of ranked) {
-      const want = n < MAX_EMBODIED && (endgame || d < EMBODY_RADIUS * EMBODY_RADIUS)
+      const inRange = endgame || (b.embodied ? d < exit2 : d < enter2)
+      const want = n < MAX_EMBODIED && inRange
       if (want) n++
       if (want && !b.embodied) this.embody(b)
       else if (!want && b.embodied) this.disembody(b)
@@ -296,7 +307,17 @@ export class BotManager implements TargetField {
   private embody(b: Bot): void {
     b.embodied = true
     b.fight = null
-    b.pos.y = Math.max(this.col.groundHeight(b.pos.x, b.pos.z, 400, 0.4), heightAt(b.pos.x, b.pos.z))
+    // Abstract drift ignores structures; never materialize on (or in) a roof.
+    const terrain = heightAt(b.pos.x, b.pos.z)
+    const surface = this.col.groundHeight(b.pos.x, b.pos.z, 400, 0.4)
+    if (surface - terrain > 0.5) {
+      const clear = this.col.findClearGround(b.pos.x, b.pos.z, 40)
+      b.pos.x = clear.x
+      b.pos.z = clear.z
+      b.pos.y = Math.max(heightAt(clear.x, clear.z), 0.2)
+    } else {
+      b.pos.y = Math.max(surface, terrain)
+    }
     if (!b.mesh) b.mesh = this.buildMesh(b)
     this.scene.add(b.mesh)
     b.mesh.position.copy(b.pos)
@@ -408,14 +429,20 @@ export class BotManager implements TargetField {
           b.state = this.rng() < 0.4 ? 'wander' : 'rotate'
         }
       }
-      // Arriving at loot: vacuum the best weapon nearby.
+      // Arriving at loot: crack the crate open first, then take the spoils.
       if (b.state === 'loot' && b.goal && Math.hypot(b.goal.x - b.pos.x, b.goal.z - b.pos.z) < 6) {
-        const got = this.loot.botTakeBestWeaponNear(b.pos.x, b.pos.z, 7)
-        if (got && got.type === 'weapon') {
-          const cand = this.makeGear(got.weaponId, got.rarity)
-          if (cand.power > b.gear.power) b.gear = cand
+        if (this.loot.botOpenCrateNear(b.pos.x, b.pos.z, 6, this.rng)) {
+          // Wait by the crate for the contents to spill.
+          b.decideT = 1.6
+        } else {
+          const got = this.loot.botTakeBestWeaponNear(b.pos.x, b.pos.z, 7, b.gear.power)
+          if (got && got.type === 'weapon') {
+            // Leave the old gun where the new one lay — loot begets loot.
+            this.loot.spawnFloor({ type: 'weapon', weaponId: b.gear.defId, rarity: b.gear.rarity }, b.pos.x + 0.5, b.pos.z + 0.5, b.pos.y)
+            b.gear = this.makeGear(got.weaponId, got.rarity)
+          }
+          b.goal = null
         }
-        b.goal = null
       }
     }
 
@@ -460,7 +487,7 @@ export class BotManager implements TargetField {
           const ty = (b.targetId === 'player' ? (player ? player.pos.y + player.eyeHeight : 0) : (t as Bot).pos.y + 1.55)
           b.losOk = this.col.lineOfSight(b.pos.x, b.pos.y + 1.55, b.pos.z, tPos.x, ty, tPos.z)
         }
-        if (b.losOk && b.reactT <= 0) this.tryFire(b, def, tPos, dist, time)
+        if (b.losOk && b.reactT <= 0) this.tryFire(b, def, tPos, dist, dt)
       }
     } else if (b.goal) {
       const dx = b.goal.x - b.pos.x
@@ -477,12 +504,26 @@ export class BotManager implements TargetField {
 
     // Movement + collisions + ground.
     if (speed > 0) {
+      const px = b.pos.x
+      const pz = b.pos.z
       const nx = b.pos.x + wishX * speed * dt
       const nz = b.pos.z + wishZ * speed * dt
       const solved = this.col.resolve(nx, b.pos.y, nz, 0.4, 1.8)
       b.pos.x = solved.x
       b.pos.z = solved.z
       b.pos.y = this.col.groundHeight(b.pos.x, b.pos.z, b.pos.y + 0.5, 0.4)
+      // Stall detector: a goal inside a building leaves the bot grinding a
+      // wall forever — give up and pick a new one.
+      const moved = Math.hypot(b.pos.x - px, b.pos.z - pz)
+      if (b.state !== 'engage' && moved < speed * dt * 0.3) {
+        b.stallT += dt
+        if (b.stallT > 1.5) {
+          b.stallT = 0
+          b.goal = this.pointInZone()
+        }
+      } else {
+        b.stallT = 0
+      }
       b.stepT -= dt
       if (b.stepT <= 0) {
         b.stepT = speed > 6 ? 0.3 : 0.42
@@ -499,11 +540,12 @@ export class BotManager implements TargetField {
     }
   }
 
-  private tryFire(b: Bot, def: WeaponDef, tPos: THREE.Vector3, dist: number, _time: number): void {
+  private tryFire(b: Bot, def: WeaponDef, tPos: THREE.Vector3, dist: number, dt: number): void {
     if (b.fireT > 0) return
     if (b.burstLeft <= 0) {
       if (b.burstPause > 0) {
-        b.burstPause -= 0.2 * (0.5 + b.skill)
+        // Real seconds — bot cadence must not scale with frame rate.
+        b.burstPause -= dt * (0.6 + b.skill * 0.8)
         return
       }
       b.burstLeft = def.auto ? 3 + Math.floor(this.rng() * 4) : 1
@@ -562,12 +604,13 @@ export class BotManager implements TargetField {
     this.emissions.report(b.id, 'fire', 0.7 + sig.bloom * 0.3)
 
     if (hit === 'player') {
-      const dmg = falloff(scaledDamage(def, b.gear.rarity), hitDist, def.near, def.far, def.falloffFloor)
+      // Shotguns resolve as one ray carrying the full pellet load.
+      const dmg = falloff(scaledDamage(def, b.gear.rarity) * def.pellets * (def.pellets > 1 ? 0.75 : 1), hitDist, def.near, def.far, def.falloffFloor)
       const mult = headshot ? def.headshotMult : 1
       const angle = Math.atan2(b.pos.x - tPos.x, b.pos.z - tPos.z)
       this.onPlayerDamaged?.(dmg, mult, angle, b.name)
     } else if (hit) {
-      const dmg = falloff(scaledDamage(def, b.gear.rarity), hitDist, def.near, def.far, def.falloffFloor)
+      const dmg = falloff(scaledDamage(def, b.gear.rarity) * def.pellets * (def.pellets > 1 ? 0.75 : 1), hitDist, def.near, def.far, def.falloffFloor)
       this.damageBot(hit, dmg * (headshot ? def.headshotMult : 1), headshot, b.id, def.id)
     } else if (worldDist !== null && hitDist >= worldDist - 0.01) {
       this.fx.sparks(end, dir.clone().multiplyScalar(-1))

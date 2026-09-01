@@ -191,6 +191,8 @@ export class WeaponSystem {
     const w = this.inv.activeWeapon()!
     this.cooldown = 60 / def.rpm
     if (w.mag <= 0) {
+      // Completely dry: one polite click, not an 1100rpm castanet.
+      if (this.inv.ammo[def.ammo] <= 0) this.cooldown = Math.max(this.cooldown, 0.45)
       audio.dryFire()
       this.startReload()
       return
@@ -288,6 +290,8 @@ export class WeaponSystem {
       if (dist > MELEE_RANGE) continue
       const dot = (dx * this.tmpDir.x + dy * this.tmpDir.y + dz * this.tmpDir.z) / Math.max(0.01, dist)
       if (dot < 0.55) continue
+      // A maul does not swing through masonry.
+      if (!this.col.lineOfSight(this.tmpEye.x, this.tmpEye.y, this.tmpEye.z, t.x, t.y + t.eyeHeight * 0.6, t.z)) continue
       const res = this.field.damage(t.id, MELEE_DAMAGE, false, null)
       emit('hitmarker', { killed: res.killed, headshot: false })
       audio.hitmarker(res.killed, false)

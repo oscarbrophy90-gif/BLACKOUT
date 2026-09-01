@@ -159,7 +159,7 @@ export function resultsScreen(
         <span><b>${result.metrics.blackoutKills}</b> blackout elims</span>
         <span><b>${result.outcome.cratesOpened}</b> crates</span>
       </div>
-      ${won ? '' : `<p class="winner-line">Winner: <b>${result.winnerName}</b></p>`}
+      ${won ? '' : result.winnerName ? `<p class="winner-line">Winner: <b>${result.winnerName}</b></p>` : '<p class="winner-line">Contract abandoned — the grid never chose a last light.</p>'}
       <div class="xp-block">${breakdown}</div>
       <div class="coin-line">+${rewards.coins} ⬡ SALVAGE</div>
       ${contracts}
