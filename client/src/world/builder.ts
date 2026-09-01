@@ -1,0 +1,481 @@
+import * as THREE from 'three'
+import { deriveSeed, makeRng } from '@blackout/shared'
+import { COLORS, ISLAND_RADIUS } from '../config.ts'
+import type { CollisionWorld } from './collision.ts'
+import { DISTRICTS, WORLD_SEED, heightAt } from './terrain.ts'
+import type { District } from './terrain.ts'
+
+// Builds every structure on Vantera out of instanced primitives. One
+// InstancedMesh per primitive kind keeps the whole island at a handful of
+// draw calls; the parallel AABB list feeds collision, bullets and bot vision.
+
+export interface SpawnPoint {
+  x: number
+  z: number
+  grade: 1 | 2 | 3
+}
+
+export interface WorldData {
+  cratePoints: SpawnPoint[]
+  lootPoints: SpawnPoint[]
+  /** Toggled visible only during Blackouts — the navigation whisper. */
+  setBlackout(dark: boolean): void
+}
+
+interface BoxSpec {
+  x: number
+  y: number
+  z: number
+  w: number
+  h: number
+  d: number
+  color: string
+  solid: boolean
+  edges: boolean
+}
+
+const MAX_BOXES = 2600
+const MAX_CYLS = 160
+const MAX_ROCKS = 300
+const MAX_SIGNS = 260
+const MAX_TREES = 2200
+
+const SIGN_PALETTE = [COLORS.sodium, COLORS.cyan, '#ff7a3d', '#7d6bff', '#7fe08a']
+
+export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
+  const rng = makeRng(deriveSeed(WORLD_SEED, 'structures'))
+  const boxes: BoxSpec[] = []
+  const signs: { x: number; y: number; z: number; w: number; h: number; d: number; color: string }[] = []
+  const cyls: { x: number; y: number; z: number; r: number; h: number; color: string }[] = []
+  const trees: { x: number; z: number; s: number }[] = []
+  const rocks: { x: number; z: number; s: number }[] = []
+  const cratePoints: SpawnPoint[] = []
+  const lootPoints: SpawnPoint[] = []
+
+  const box = (s: BoxSpec) => {
+    if (boxes.length < MAX_BOXES) boxes.push(s)
+  }
+
+  /** A building sitting on the terrain, optionally raised on pillars. */
+  function building(
+    x: number, z: number, w: number, h: number, d: number,
+    color: string, opts: { arcade?: boolean; signs?: number; edges?: boolean } = {},
+  ): void {
+    const base = heightAt(x, z)
+    if (base < 0.5) return
+    if (opts.arcade) {
+      const lift = 3.4
+      box({ x, y: base + lift, z, w, h: h - lift, d, color, solid: true, edges: opts.edges ?? true })
+      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        box({
+          x: x + sx * (w / 2 - 0.5), y: base, z: z + sz * (d / 2 - 0.5),
+          w: 0.7, h: lift, d: 0.7, color, solid: true, edges: false,
+        })
+      }
+      lootPoints.push({ x, z, grade: 2 })
+    } else {
+      box({ x, y: base, z, w, h, d, color, solid: true, edges: opts.edges ?? true })
+    }
+    const nSigns = opts.signs ?? 0
+    for (let i = 0; i < nSigns && signs.length < MAX_SIGNS; i++) {
+      const side = Math.floor(rng() * 4)
+      const along = (rng() - 0.5) * (side < 2 ? w : d) * 0.7
+      const sy = base + 2.5 + rng() * Math.max(1, h - 4)
+      const c = SIGN_PALETTE[Math.floor(rng() * SIGN_PALETTE.length)]
+      const sw = side < 2 ? 1.6 + rng() * 3 : 0.24
+      const sd = side < 2 ? 0.24 : 1.6 + rng() * 3
+      signs.push({
+        x: x + (side === 0 ? along : side === 1 ? along : side === 2 ? -w / 2 - 0.12 : w / 2 + 0.12),
+        y: sy,
+        z: side === 0 ? z - d / 2 - 0.12 : side === 1 ? z + d / 2 + 0.12 : z + along,
+        w: sw, h: 0.5 + rng() * 0.9, d: sd, color: c,
+      })
+    }
+  }
+
+  function scatterPoints(d: District, n: number, into: SpawnPoint[], grade: 1 | 2 | 3): void {
+    for (let i = 0; i < n; i++) {
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const ang = rng() * Math.PI * 2
+        const rr = Math.sqrt(rng()) * d.r * 0.92
+        const x = d.cx + Math.cos(ang) * rr
+        const z = d.cz + Math.sin(ang) * rr
+        if (heightAt(x, z) < 0.6) continue
+        if (insideAnyBox(boxes, x, z)) continue
+        into.push({ x, z, grade })
+        break
+      }
+    }
+  }
+
+  // ——— Districts ———
+  for (const d of DISTRICTS) {
+    switch (d.archetype) {
+      case 'city': {
+        // Street grid of towers; the brightest place on the island.
+        const step = 42
+        for (let gx = -5; gx <= 5; gx++) {
+          for (let gz = -5; gz <= 5; gz++) {
+            const x = d.cx + gx * step + (rng() - 0.5) * 8
+            const z = d.cz + gz * step + (rng() - 0.5) * 8
+            if (Math.hypot(x - d.cx, z - d.cz) > d.r * 0.9) continue
+            if (rng() < 0.28) continue // plazas
+            const h = 10 + rng() * 22
+            const grey = 0.32 + rng() * 0.2
+            const c = new THREE.Color(grey * 0.9, grey * 0.92, grey * 1.05)
+            building(x, z, 14 + rng() * 10, h, 14 + rng() * 10, `#${c.getHexString()}`, {
+              arcade: rng() < 0.3,
+              signs: 1 + Math.floor(rng() * 2),
+            })
+          }
+        }
+        scatterPoints(d, 70, lootPoints, d.grade)
+        scatterPoints(d, 14, cratePoints, d.grade)
+        break
+      }
+      case 'industrial': {
+        for (let i = 0; i < 11; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = Math.sqrt(rng()) * d.r * 0.75
+          building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr,
+            22 + rng() * 16, 9 + rng() * 5, 30 + rng() * 14, '#4a4238', { signs: 1 })
+        }
+        // Capacitor stacks — the island's Blackout clock arcs here.
+        for (let i = 0; i < 8 && cyls.length < MAX_CYLS; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = rng() * d.r * 0.6
+          const x = d.cx + Math.cos(ang) * rr
+          const z = d.cz + Math.sin(ang) * rr
+          cyls.push({ x, y: heightAt(x, z), z, r: 3 + rng() * 2, h: 14 + rng() * 10, color: '#5a5348' })
+        }
+        scatterPoints(d, 55, lootPoints, d.grade)
+        scatterPoints(d, 12, cratePoints, d.grade)
+        break
+      }
+      case 'forest': {
+        for (let i = 0; i < 700 && trees.length < MAX_TREES; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = Math.sqrt(rng()) * d.r
+          const x = d.cx + Math.cos(ang) * rr
+          const z = d.cz + Math.sin(ang) * rr
+          if (heightAt(x, z) < 0.8) continue
+          trees.push({ x, z, s: 0.75 + rng() * 0.8 })
+        }
+        for (let i = 0; i < 7; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = rng() * d.r * 0.7
+          building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr,
+            7 + rng() * 3, 4, 8 + rng() * 3, '#4f4335', { signs: rng() < 0.4 ? 1 : 0 })
+        }
+        scatterPoints(d, 45, lootPoints, d.grade)
+        scatterPoints(d, 8, cratePoints, d.grade)
+        break
+      }
+      case 'mountain': {
+        for (let i = 0; i < 4; i++) {
+          const ang = (i / 4) * Math.PI * 2 + rng()
+          const rr = d.r * (0.35 + rng() * 0.45)
+          const x = d.cx + Math.cos(ang) * rr
+          const z = d.cz + Math.sin(ang) * rr
+          building(x, z, 6, 14, 6, '#57505a', { signs: 1 })
+        }
+        // Summit relay.
+        building(d.cx, d.cz, 12, 8, 12, '#5c5560', { signs: 2 })
+        for (let i = 0; i < 60 && rocks.length < MAX_ROCKS; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = Math.sqrt(rng()) * d.r
+          rocks.push({ x: d.cx + Math.cos(ang) * rr, z: d.cz + Math.sin(ang) * rr, s: 1.5 + rng() * 3.5 })
+        }
+        scatterPoints(d, 40, lootPoints, d.grade)
+        scatterPoints(d, 8, cratePoints, d.grade)
+        break
+      }
+      case 'coast': {
+        // Container yard rows.
+        for (let row = 0; row < 6; row++) {
+          for (let i = 0; i < 10; i++) {
+            if (rng() < 0.3) continue
+            const x = d.cx - 70 + i * 14
+            const z = d.cz - 45 + row * 18
+            const base = heightAt(x, z)
+            if (base < 0.4) continue
+            const c = SIGN_PALETTE[Math.floor(rng() * SIGN_PALETTE.length)]
+            const tint = new THREE.Color(c).multiplyScalar(0.34)
+            box({
+              x, y: base, z, w: 12, h: 3.2 + (rng() < 0.35 ? 3.2 : 0), d: 5,
+              color: `#${tint.getHexString()}`, solid: true, edges: true,
+            })
+          }
+        }
+        building(d.cx + 60, d.cz + 40, 26, 10, 36, '#44484f', { signs: 2 })
+        // Piers reaching into black water.
+        for (let i = 0; i < 3; i++) {
+          const z = d.cz - 90 - i * 26
+          box({ x: d.cx - 40 + i * 45, y: 1.2, z, w: 6, h: 1.1, d: 70, color: '#3d3a33', solid: true, edges: false })
+        }
+        scatterPoints(d, 55, lootPoints, d.grade)
+        scatterPoints(d, 12, cratePoints, d.grade)
+        break
+      }
+      case 'military': {
+        // Perimeter wall with gates.
+        const w = d.r * 0.85
+        for (const [ox, oz, ww, dd] of [
+          [0, -w, w * 1.7, 2], [0, w, w * 1.7, 2], [-w, 0, 2, w * 1.4], [w, 0, 2, w * 1.4],
+        ]) {
+          box({
+            x: d.cx + ox, y: heightAt(d.cx + ox, d.cz + oz), z: d.cz + oz,
+            w: ww, h: 4.5, d: dd, color: '#3c4038', solid: true, edges: false,
+          })
+        }
+        for (let i = 0; i < 3; i++) {
+          building(d.cx - 60 + i * 60, d.cz - 30, 24, 11, 30, '#41463d', { edges: true })
+        }
+        for (let i = 0; i < 6; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = rng() * d.r * 0.55
+          building(d.cx + Math.cos(ang) * rr, d.cz + 25 + Math.sin(ang) * rr * 0.5, 9, 5, 9, '#373b34')
+        }
+        building(d.cx, d.cz + 60, 8, 22, 8, '#454a41', { signs: 2 })
+        scatterPoints(d, 60, lootPoints, d.grade)
+        scatterPoints(d, 16, cratePoints, d.grade)
+        break
+      }
+      case 'suburb': {
+        for (let i = 0; i < 38; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = Math.sqrt(rng()) * d.r * 0.9
+          const x = d.cx + Math.cos(ang) * rr
+          const z = d.cz + Math.sin(ang) * rr
+          const base = heightAt(x, z)
+          if (base < -0.5) continue
+          // Half the town is sunk to the eaves.
+          const sink = rng() < 0.5 ? 2.2 : 0
+          const grey = 0.3 + rng() * 0.18
+          const c = new THREE.Color(grey, grey * 0.95, grey * 0.9)
+          box({
+            x, y: base - sink, z, w: 6 + rng() * 3, h: 4.5, d: 7 + rng() * 3,
+            color: `#${c.getHexString()}`, solid: true, edges: true,
+          })
+        }
+        scatterPoints(d, 40, lootPoints, d.grade)
+        scatterPoints(d, 8, cratePoints, d.grade)
+        break
+      }
+      case 'mine': {
+        // Heliostat field: mirror posts that catch the dusk.
+        for (let i = 0; i < 16 && cyls.length < MAX_CYLS; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = Math.sqrt(rng()) * d.r * 0.8
+          const x = d.cx + Math.cos(ang) * rr
+          const z = d.cz + Math.sin(ang) * rr
+          cyls.push({ x, y: heightAt(x, z), z, r: 0.3, h: 6, color: '#55504a' })
+          signs.push({ x, y: heightAt(x, z) + 6.2, z, w: 2.6, h: 1.6, d: 0.2, color: '#8a97a5' })
+        }
+        for (let i = 0; i < 5; i++) {
+          const ang = rng() * Math.PI * 2
+          const rr = rng() * d.r * 0.6
+          building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr, 10, 6, 14, '#4c463c', { signs: 1 })
+        }
+        scatterPoints(d, 50, lootPoints, d.grade)
+        scatterPoints(d, 11, cratePoints, d.grade)
+        break
+      }
+    }
+  }
+
+  // ——— Island-wide scatter ———
+  for (let i = 0; i < 500 && trees.length < MAX_TREES; i++) {
+    const ang = rng() * Math.PI * 2
+    const rr = Math.sqrt(rng()) * ISLAND_RADIUS * 0.9
+    const x = Math.cos(ang) * rr
+    const z = Math.sin(ang) * rr
+    if (heightAt(x, z) < 1 || districtAtFast(x, z)) continue
+    trees.push({ x, z, s: 0.7 + rng() * 0.7 })
+  }
+  for (let i = 0; i < 120 && rocks.length < MAX_ROCKS; i++) {
+    const ang = rng() * Math.PI * 2
+    const rr = Math.sqrt(rng()) * ISLAND_RADIUS * 0.95
+    const x = Math.cos(ang) * rr
+    const z = Math.sin(ang) * rr
+    if (heightAt(x, z) < 0.5) continue
+    rocks.push({ x, z, s: 1 + rng() * 2.5 })
+  }
+  // Wilderness loot so rotations stay fed.
+  for (let i = 0; i < 90; i++) {
+    const ang = rng() * Math.PI * 2
+    const rr = Math.sqrt(rng()) * ISLAND_RADIUS * 0.88
+    const x = Math.cos(ang) * rr
+    const z = Math.sin(ang) * rr
+    if (heightAt(x, z) < 0.8) continue
+    lootPoints.push({ x, z, grade: 1 })
+  }
+  for (let i = 0; i < 12; i++) {
+    const ang = rng() * Math.PI * 2
+    const rr = Math.sqrt(rng()) * ISLAND_RADIUS * 0.85
+    const x = Math.cos(ang) * rr
+    const z = Math.sin(ang) * rr
+    if (heightAt(x, z) < 0.8) continue
+    cratePoints.push({ x, z, grade: 1 })
+  }
+
+  // The pylon ring — always-lit navigation, per the design bible.
+  for (let i = 0; i < 12; i++) {
+    const ang = (i / 12) * Math.PI * 2
+    const x = Math.cos(ang) * ISLAND_RADIUS * 0.55
+    const z = Math.sin(ang) * ISLAND_RADIUS * 0.55
+    const base = heightAt(x, z)
+    if (base < 0.5) continue
+    cyls.push({ x, y: base, z, r: 1.1, h: 42, color: '#3f3d46' })
+    box({ x, y: base + 34, z, w: 14, h: 1.2, d: 1.2, color: '#3f3d46', solid: false, edges: false })
+    signs.push({ x, y: base + 43, z, w: 1.4, h: 1.4, d: 1.4, color: COLORS.danger })
+  }
+
+  // ——— Bake the instanced meshes ———
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1)
+  boxGeo.translate(0, 0.5, 0)
+  const boxMesh = new THREE.InstancedMesh(boxGeo, new THREE.MeshLambertMaterial(), boxes.length)
+  const m = new THREE.Matrix4()
+  const q = new THREE.Quaternion()
+  const cvec = new THREE.Color()
+  boxes.forEach((b, i) => {
+    m.compose(new THREE.Vector3(b.x, b.y, b.z), q, new THREE.Vector3(b.w, b.h, b.d))
+    boxMesh.setMatrixAt(i, m)
+    boxMesh.setColorAt(i, cvec.set(b.color))
+    if (b.solid) {
+      col.addBox({
+        minX: b.x - b.w / 2, minY: b.y, minZ: b.z - b.d / 2,
+        maxX: b.x + b.w / 2, maxY: b.y + b.h, maxZ: b.z + b.d / 2,
+      })
+    }
+  })
+  scene.add(boxMesh)
+
+  const cylGeo = new THREE.CylinderGeometry(1, 1, 1, 8)
+  cylGeo.translate(0, 0.5, 0)
+  const cylMesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), cyls.length)
+  cyls.forEach((c, i) => {
+    m.compose(new THREE.Vector3(c.x, c.y, c.z), q, new THREE.Vector3(c.r, c.h, c.r))
+    cylMesh.setMatrixAt(i, m)
+    cylMesh.setColorAt(i, cvec.set(c.color))
+    col.addBox({
+      minX: c.x - c.r, minY: c.y, minZ: c.z - c.r,
+      maxX: c.x + c.r, maxY: c.y + c.h, maxZ: c.z + c.r,
+    })
+  })
+  scene.add(cylMesh)
+
+  const rockGeo = new THREE.DodecahedronGeometry(1)
+  const rockMesh = new THREE.InstancedMesh(rockGeo, new THREE.MeshLambertMaterial({ color: '#514d55' }), rocks.length)
+  rocks.forEach((r, i) => {
+    const y = heightAt(r.x, r.z)
+    m.compose(
+      new THREE.Vector3(r.x, y + r.s * 0.2, r.z),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x, r.z, 0)),
+      new THREE.Vector3(r.s, r.s * 0.7, r.s),
+    )
+    rockMesh.setMatrixAt(i, m)
+    if (r.s > 2.2) {
+      col.addBox({
+        minX: r.x - r.s * 0.7, minY: y, minZ: r.z - r.s * 0.7,
+        maxX: r.x + r.s * 0.7, maxY: y + r.s * 0.6, maxZ: r.z + r.s * 0.7,
+      })
+    }
+  })
+  scene.add(rockMesh)
+
+  // Glasspine trees: trunk + vitrified glass crown.
+  const trunkGeo = new THREE.CylinderGeometry(0.22, 0.34, 3.4, 5)
+  trunkGeo.translate(0, 1.7, 0)
+  const trunkMesh = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: '#39302b' }), trees.length)
+  const crownGeo = new THREE.ConeGeometry(1.6, 5.4, 6)
+  crownGeo.translate(0, 5.6, 0)
+  const crownMesh = new THREE.InstancedMesh(
+    crownGeo,
+    new THREE.MeshLambertMaterial({ color: '#4c6b52' }),
+    trees.length,
+  )
+  trees.forEach((t, i) => {
+    const y = heightAt(t.x, t.z)
+    const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.x * 7)
+    m.compose(new THREE.Vector3(t.x, y, t.z), rot, new THREE.Vector3(t.s, t.s, t.s))
+    trunkMesh.setMatrixAt(i, m)
+    crownMesh.setMatrixAt(i, m)
+    col.addBox({
+      minX: t.x - 0.3, minY: y, minZ: t.z - 0.3,
+      maxX: t.x + 0.3, maxY: y + 3.2 * t.s, maxZ: t.z + 0.3,
+    })
+  })
+  scene.add(trunkMesh, crownMesh)
+
+  // Neon signs and beacons: MeshBasic ignores lighting, so these survive
+  // Blackouts untouched — the landmark rule.
+  const signGeo = new THREE.BoxGeometry(1, 1, 1)
+  const signMesh = new THREE.InstancedMesh(signGeo, new THREE.MeshBasicMaterial(), signs.length)
+  signs.forEach((s, i) => {
+    m.compose(new THREE.Vector3(s.x, s.y, s.z), q, new THREE.Vector3(s.w, s.h, s.d))
+    signMesh.setMatrixAt(i, m)
+    signMesh.setColorAt(i, cvec.set(s.color))
+  })
+  scene.add(signMesh)
+
+  // Edge-glow: every flagged box contributes 12 additive edges, visible only
+  // in the dark. "Hidden in the dark, never lost in it."
+  const edgeBoxes = boxes.filter((b) => b.edges)
+  const positions = new Float32Array(edgeBoxes.length * 24 * 3)
+  let off = 0
+  const E = [
+    [0, 0, 0, 1, 0, 0], [0, 0, 1, 1, 0, 1], [0, 1, 0, 1, 1, 0], [0, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 1], [1, 0, 0, 1, 0, 1], [0, 1, 0, 0, 1, 1], [1, 1, 0, 1, 1, 1],
+    [0, 0, 0, 0, 1, 0], [1, 0, 0, 1, 1, 0], [0, 0, 1, 0, 1, 1], [1, 0, 1, 1, 1, 1],
+  ]
+  for (const b of edgeBoxes) {
+    for (const e of E) {
+      positions[off++] = b.x + (e[0] - 0.5) * b.w
+      positions[off++] = b.y + e[1] * b.h
+      positions[off++] = b.z + (e[2] - 0.5) * b.d
+      positions[off++] = b.x + (e[3] - 0.5) * b.w
+      positions[off++] = b.y + e[4] * b.h
+      positions[off++] = b.z + (e[5] - 0.5) * b.d
+    }
+  }
+  const edgeGeo = new THREE.BufferGeometry()
+  edgeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  const edgeGlow = new THREE.LineSegments(
+    edgeGeo,
+    new THREE.LineBasicMaterial({
+      color: COLORS.cyanDim,
+      transparent: true,
+      opacity: 0.33,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  )
+  edgeGlow.visible = false
+  scene.add(edgeGlow)
+
+  return {
+    cratePoints,
+    lootPoints,
+    setBlackout(dark: boolean) {
+      edgeGlow.visible = dark
+    },
+  }
+}
+
+function insideAnyBox(boxes: BoxSpec[], x: number, z: number): boolean {
+  for (const b of boxes) {
+    if (
+      x > b.x - b.w / 2 - 1 && x < b.x + b.w / 2 + 1 &&
+      z > b.z - b.d / 2 - 1 && z < b.z + b.d / 2 + 1
+    ) return true
+  }
+  return false
+}
+
+function districtAtFast(x: number, z: number): boolean {
+  for (const d of DISTRICTS) {
+    if (Math.hypot(x - d.cx, z - d.cz) < d.r) return true
+  }
+  return false
+}

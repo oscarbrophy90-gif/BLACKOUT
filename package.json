@@ -1,0 +1,26 @@
+{
+  "name": "blackout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BLACKOUT - a 100-player last-player-standing first-person shooter.",
+  "workspaces": [
+    "shared",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=client",
+    "preview": "npm run preview --workspace=client",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types shared/test/*.test.ts && node --test server/test/*.test.js",
+    "build:standalone": "npm run build --workspace=client && node client/build-standalone.mjs",
+    "serve": "node server/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}
