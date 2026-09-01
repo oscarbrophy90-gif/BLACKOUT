@@ -33,7 +33,8 @@ export const DISTRICTS: readonly District[] = [
   { id: 'breakwater', name: 'Breakwater Terminal', archetype: 'coast', cx: -170, cz: -600, r: 190, grade: 2, flatten: 3.5 },
   { id: 'substation', name: 'Substation Zero', archetype: 'military', cx: 90, cz: -330, r: 150, grade: 3, flatten: 11 },
   { id: 'sinks', name: 'The Sinks', archetype: 'suburb', cx: -520, cz: 230, r: 190, grade: 1, flatten: 1.2 },
-  { id: 'quarry', name: 'Hollowlight Quarry', archetype: 'mine', cx: 520, cz: 140, r: 170, grade: 2, flatten: -4 },
+  // The bowl floor must stay above WATER_LEVEL or the pit floods.
+  { id: 'quarry', name: 'Hollowlight Quarry', archetype: 'mine', cx: 520, cz: 140, r: 170, grade: 2, flatten: 0.9 },
 ] as const
 
 // ——— Deterministic value noise ———

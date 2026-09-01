@@ -119,7 +119,8 @@ export class Hud {
     this.unsubs.push(on('playerDamaged', ({ angle }) => {
       const arc = document.createElement('div')
       arc.className = 'dmg-arc'
-      arc.style.transform = `rotate(${(-angle * 180) / Math.PI}deg)`
+      // Half-turn corrects the yaw convention so the arc points AT the shooter.
+      arc.style.transform = `rotate(${180 - (angle * 180) / Math.PI}deg)`
       this.els.damageRing.appendChild(arc)
       window.setTimeout(() => arc.remove(), 900)
     }))
@@ -139,7 +140,10 @@ export class Hud {
     this.unsubs.push(on('supplyDrop', ({ x, z }) => {
       this.supplyDrops.push({ x, z })
     }))
-    this.unsubs.push(on('crateOpened', () => undefined))
+    this.unsubs.push(on('crateOpened', ({ x, z }) => {
+      // Looted supply drops stop beckoning on the minimap.
+      this.supplyDrops = this.supplyDrops.filter((d) => Math.hypot(d.x - x, d.z - z) > 4)
+    }))
   }
 
   private setText(key: string, elem: HTMLElement, text: string): void {
@@ -236,7 +240,8 @@ export class Hud {
     g.clearRect(0, 0, w, h)
     g.fillStyle = 'rgba(10,12,20,0.45)'
     g.fillRect(0, 0, w, h)
-    const heading = ((-yaw * 180) / Math.PI + 360) % 360
+    // Sign-safe modulo: yaw grows unbounded over a match of turning.
+    const heading = ((((-yaw * 180) / Math.PI) % 360) + 360) % 360
     g.font = '600 12px system-ui, sans-serif'
     g.textAlign = 'center'
     const pxPerDeg = 3.2

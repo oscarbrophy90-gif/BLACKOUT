@@ -323,7 +323,7 @@ export class LootSystem {
             const ang = (i / items.length) * Math.PI * 2 + c.group.rotation.y
             this.spawnFloor(item, c.x + Math.cos(ang) * 1.3, c.z + Math.sin(ang) * 1.3)
           })
-          emit('crateOpened', { tier: c.tier })
+          emit('crateOpened', { tier: c.tier, x: c.x, z: c.z })
         }
       }
     }

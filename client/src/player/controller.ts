@@ -94,7 +94,14 @@ export class FPSController {
       this.slideT -= dt
       if (this.slideT <= 0 || !this.grounded || input.justPressed('Space')) this.sliding = false
     }
-    this.crouching = (wantCrouch || this.sliding) && this.grounded ? true : wantCrouch
+    let crouchNow = (wantCrouch || this.sliding) && this.grounded ? true : wantCrouch
+    // No standing up under an arcade slab: keep crouching while the
+    // headroom is short, or resolve() would eject us through a wall.
+    if (this.crouching && !crouchNow) {
+      const ceil = col.lowestCeiling(this.pos.x, this.pos.y, this.pos.z, PLAYER_RADIUS, 1.85)
+      if (ceil !== null) crouchNow = true
+    }
+    this.crouching = crouchNow
     this.sprinting = wantSprint && moving && this.grounded && !this.sliding
 
     // ——— Horizontal velocity ———
@@ -126,9 +133,13 @@ export class FPSController {
       this.sliding = false
     }
     this.vel.y -= GRAVITY * dt
+    // Terminal velocity keeps a single frame's fall inside the swept
+    // ground-check window even at the dt clamp.
+    if (this.vel.y < -38) this.vel.y = -38
     if (!this.grounded && this.vel.y > -0.1 && this.fallStart < this.pos.y) this.fallStart = this.pos.y
 
     // ——— Integrate + collide ———
+    const prevFeet = this.pos.y
     const nx = this.pos.x + this.vel.x * dt
     const nz = this.pos.z + this.vel.z * dt
     const ny = this.pos.y + this.vel.y * dt
@@ -138,7 +149,17 @@ export class FPSController {
     this.pos.z = solved.z
     this.pos.y = ny
 
-    const ground = col.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.5, PLAYER_RADIUS)
+    // Ceiling bump: rising into an overhead slab stops the jump instead of
+    // letting resolve()'s inside-a-box branch fling us sideways.
+    if (this.vel.y > 0) {
+      const ceil = col.lowestCeiling(this.pos.x, this.pos.y, this.pos.z, PLAYER_RADIUS, height)
+      if (ceil !== null && this.pos.y + height > ceil) {
+        this.pos.y = ceil - height
+        this.vel.y = 0
+      }
+    }
+
+    const ground = col.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.5, PLAYER_RADIUS, prevFeet + 0.1)
     if (this.pos.y <= ground + 0.001) {
       if (!this.grounded) {
         const fall = Math.max(0, this.fallStart - ground)

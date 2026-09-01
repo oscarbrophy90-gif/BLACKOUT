@@ -80,7 +80,9 @@ export class Fx {
     }
     const beamGeo = new THREE.CylinderGeometry(0.5, 0.5, 1, 8, 1, true)
     beamGeo.translate(0, 0.5, 0)
-    for (let i = 0; i < 24; i++) {
+    // Sized for the permanent final Blackout, when every Mil-Spec+ item on
+    // the ground wants its own persistent light column.
+    for (let i = 0; i < 64; i++) {
       const mesh = new THREE.Mesh(
         beamGeo,
         new THREE.MeshBasicMaterial({

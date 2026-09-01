@@ -341,11 +341,12 @@ export class Match {
     switch (this.phaseState.phase) {
       case 'drop': {
         // Cable drop: fast vertical descent onto the chosen point.
+        const prevY = this.controller.pos.y
         this.controller.pos.y -= 46 * dt
         const m = this.input.consumeMouse()
         this.controller.yaw -= m.dx * 0.002
         this.controller.pitch = THREE.MathUtils.clamp(this.controller.pitch - m.dy * 0.002, -1.4, 1.4)
-        const ground = this.col.groundHeight(this.controller.pos.x, this.controller.pos.z, this.controller.pos.y, 0.45)
+        const ground = this.col.groundHeight(this.controller.pos.x, this.controller.pos.z, this.controller.pos.y, 0.45, prevY)
         audio.setWind(1)
         if (this.controller.pos.y <= ground) {
           this.controller.pos.y = ground
@@ -566,7 +567,7 @@ export class Match {
           active: this.player.inv.active === i,
         }
       }),
-      yaw: this.controller.yaw,
+      yaw: this.phaseState.phase === 'spectate' && spectated ? spectated.yaw : this.controller.yaw,
       playerX: this.phaseState.phase === 'spectate' && spectated ? spectated.pos.x : this.controller.pos.x,
       playerZ: this.phaseState.phase === 'spectate' && spectated ? spectated.pos.z : this.controller.pos.z,
       phaseIdx: this.zone.phaseIdx,

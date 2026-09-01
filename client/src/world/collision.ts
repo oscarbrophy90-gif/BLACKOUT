@@ -96,16 +96,32 @@ export class CollisionWorld {
   }
 
   /** Highest walkable surface under (x, z) at feet height y: terrain or a
-   *  box top the actor is standing on / falling onto. */
-  groundHeight(x: number, z: number, y: number, r: number): number {
+   *  box top the actor is standing on / falling onto. `sweepFromY` is the
+   *  feet height BEFORE this frame's fall — any roof crossed during the
+   *  frame still counts, so fast falls can't tunnel through rooftops. */
+  groundHeight(x: number, z: number, y: number, r: number, sweepFromY = y): number {
     let g = heightAt(x, z)
+    const top = Math.max(y, sweepFromY) + 0.6
     const ids = this.near(x, z, this.scratch)
     for (const i of ids) {
       const b = this.boxes[i]
       if (x + r < b.minX || x - r > b.maxX || z + r < b.minZ || z - r > b.maxZ) continue
-      if (b.maxY <= y + 0.6 && b.maxY > g) g = b.maxY
+      if (b.maxY <= top && b.maxY > g) g = b.maxY
     }
     return g
+  }
+
+  /** Lowest box underside above the feet within the capsule's height —
+   *  the ceiling a jump bumps against. Null when headroom is clear. */
+  lowestCeiling(x: number, y: number, z: number, r: number, h: number): number | null {
+    let best: number | null = null
+    const ids = this.near(x, z, this.scratch)
+    for (const i of ids) {
+      const b = this.boxes[i]
+      if (x + r < b.minX || x - r > b.maxX || z + r < b.minZ || z - r > b.maxZ) continue
+      if (b.minY >= y + 0.2 && b.minY < y + h && (best === null || b.minY < best)) best = b.minY
+    }
+    return best
   }
 
   /**

@@ -6,7 +6,7 @@ export interface GameEvents {
   playerDamaged: { angle: number; amount: number }
   pickup: { label: string; rarityColor: string }
   toast: { text: string; strong?: boolean }
-  crateOpened: { tier: string }
+  crateOpened: { tier: string; x: number; z: number }
   blackoutWarn: Record<string, never>
   blackoutStart: Record<string, never>
   blackoutEnd: Record<string, never>

@@ -600,7 +600,9 @@ export class BotManager implements TargetField {
     const muzzle = new THREE.Vector3(b.pos.x - Math.sin(b.yaw) * 0.5, b.pos.y + 1.35, b.pos.z - Math.cos(b.yaw) * 0.5)
     this.fx.tracer(muzzle, end, b.id.charCodeAt(3) % 2 === 0 ? '#ffc247' : '#ff9a4d', sig.tracerHang * (this.dark ? 2 : 0.4))
     this.fx.flare(muzzle, '#ffc987', 0.5 + sig.bloom * 0.5, 0.06)
-    audio.shot(def.cls, dist > 55)
+    // Loudness belongs to the LISTENER's distance — sound is information.
+    const listenerDist = this.player ? muzzle.distanceTo(this.player.pos) : dist
+    audio.shot(def.cls, listenerDist > 55)
     this.emissions.report(b.id, 'fire', 0.7 + sig.bloom * 0.3)
 
     if (hit === 'player') {

@@ -208,25 +208,39 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
           }
         }
         building(d.cx + 60, d.cz + 40, 26, 10, 36, '#44484f', { signs: 2 })
-        // Piers reaching into black water.
+        // Piers reaching into black water: march each one to the actual
+        // shoreline instead of guessing where the sea is.
         for (let i = 0; i < 3; i++) {
-          const z = d.cz - 90 - i * 26
-          box({ x: d.cx - 40 + i * 45, y: 1.2, z, w: 6, h: 1.1, d: 70, color: '#3d3a33', solid: true, edges: false })
+          const px = d.cx - 40 + i * 45
+          let z = d.cz
+          while (heightAt(px, z) > 0 && z > d.cz - 450) z -= 4
+          if (heightAt(px, z) > 0) continue
+          box({ x: px, y: -0.7, z: z - 24, w: 6, h: 1.2, d: 70, color: '#3d3a33', solid: true, edges: false })
         }
         scatterPoints(d, 55, lootPoints, d.grade)
         scatterPoints(d, 12, cratePoints, d.grade)
         break
       }
       case 'military': {
-        // Perimeter wall with gates.
+        // Perimeter wall with gates — segmented so each stretch hugs the
+        // terrain instead of floating off one centre height sample.
         const w = d.r * 0.85
         for (const [ox, oz, ww, dd] of [
           [0, -w, w * 1.7, 2], [0, w, w * 1.7, 2], [-w, 0, 2, w * 1.4], [w, 0, 2, w * 1.4],
         ]) {
-          box({
-            x: d.cx + ox, y: heightAt(d.cx + ox, d.cz + oz), z: d.cz + oz,
-            w: ww, h: 4.5, d: dd, color: '#3c4038', solid: true, edges: false,
-          })
+          const segments = 8
+          const alongX = ww > dd
+          const len = alongX ? ww : dd
+          for (let s = 0; s < segments; s++) {
+            const off = -len / 2 + (s + 0.5) * (len / segments)
+            const sx = d.cx + ox + (alongX ? off : 0)
+            const sz = d.cz + oz + (alongX ? 0 : off)
+            box({
+              x: sx, y: heightAt(sx, sz) - 0.3, z: sz,
+              w: alongX ? len / segments + 0.1 : 2, h: 4.8, d: alongX ? 2 : len / segments + 0.1,
+              color: '#3c4038', solid: true, edges: false,
+            })
+          }
         }
         for (let i = 0; i < 3; i++) {
           building(d.cx - 60 + i * 60, d.cz - 30, 24, 11, 30, '#41463d', { edges: true })
@@ -329,6 +343,26 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
     cyls.push({ x, y: base, z, r: 1.1, h: 42, color: '#3f3d46' })
     box({ x, y: base + 34, z, w: 14, h: 1.2, d: 1.2, color: '#3f3d46', solid: false, edges: false })
     signs.push({ x, y: base + 43, z, w: 1.4, h: 1.4, d: 1.4, color: COLORS.danger })
+  }
+
+  // Structures sit on sloped terrain but sample height once: sink every
+  // grounded box to its lowest footprint corner (top face stays put) so no
+  // wall floats a shoot-under slit above downhill ground. Raised boxes
+  // (arcade slabs, crossarms, piers over water) are left alone.
+  for (const b of boxes) {
+    if (!b.solid) continue
+    if (b.y - heightAt(b.x, b.z) > 0.6) continue
+    let minH = b.y
+    for (const [cx, cz] of [
+      [b.x - b.w / 2, b.z - b.d / 2], [b.x + b.w / 2, b.z - b.d / 2],
+      [b.x - b.w / 2, b.z + b.d / 2], [b.x + b.w / 2, b.z + b.d / 2],
+    ]) {
+      minH = Math.min(minH, heightAt(cx, cz))
+    }
+    if (b.y - minH > 0.05) {
+      b.h += b.y - minH
+      b.y = minH
+    }
   }
 
   // ——— Bake the instanced meshes ———
