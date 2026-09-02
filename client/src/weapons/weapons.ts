@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { WEAPON_BY_ID, falloff, scaledDamage, scaledMag, signatureOf } from '@blackout/shared'
-import type { WeaponDef } from '@blackout/shared'
+import type { WeaponDef, WeaponSkinItem } from '@blackout/shared'
 import { audio } from '../core/audio.ts'
 import { emit } from '../core/events.ts'
 import type { Input } from '../core/input.ts'
@@ -105,11 +105,11 @@ export class WeaponSystem {
   }
 
   /** Refresh the held model after inventory changes (pickup, swap). */
-  refreshViewmodel(skinId: string, charm: Parameters<Viewmodel['setWeapon']>[2]): void {
+  refreshViewmodel(skin: WeaponSkinItem): void {
     const w = this.inv.activeWeapon()
-    if (this.inv.active === 2) this.vm.setWeapon({ type: 'melee' }, skinId, charm)
-    else if (w) this.vm.setWeapon({ type: 'gun', def: WEAPON_BY_ID.get(w.defId)! }, skinId, charm)
-    else this.vm.setWeapon({ type: 'none' }, skinId, charm)
+    if (this.inv.active === 2) this.vm.setWeapon({ type: 'melee' }, skin)
+    else if (w) this.vm.setWeapon({ type: 'gun', def: WEAPON_BY_ID.get(w.defId)! }, skin)
+    else this.vm.setWeapon({ type: 'none' }, skin)
     this.switchT = 0.3
     this.reloading = null
     this.vm.cancelReload()
@@ -127,7 +127,7 @@ export class WeaponSystem {
     audio.reload('out')
   }
 
-  update(dt: number, input: Input, opts: { skinId: string; charm: Parameters<Viewmodel['setWeapon']>[2]; frozen: boolean; time: number }): void {
+  update(dt: number, input: Input, opts: { skin: WeaponSkinItem; frozen: boolean; time: number }): void {
     this.cooldown = Math.max(0, this.cooldown - dt)
     this.switchT = Math.max(0, this.switchT - dt)
     this.meleeCd = Math.max(0, this.meleeCd - dt)
@@ -138,13 +138,13 @@ export class WeaponSystem {
     if (!opts.frozen) {
       if (input.justPressed('Digit1') && this.inv.active !== 0 && this.inv.slots[0]) {
         this.inv.active = 0
-        this.refreshViewmodel(opts.skinId, opts.charm)
+        this.refreshViewmodel(opts.skin)
       } else if (input.justPressed('Digit2') && this.inv.active !== 1 && this.inv.slots[1]) {
         this.inv.active = 1
-        this.refreshViewmodel(opts.skinId, opts.charm)
+        this.refreshViewmodel(opts.skin)
       } else if ((input.justPressed('Digit3') || input.justPressed('KeyV')) && this.inv.active !== 2) {
         this.inv.active = 2
-        this.refreshViewmodel(opts.skinId, opts.charm)
+        this.refreshViewmodel(opts.skin)
       }
     }
 

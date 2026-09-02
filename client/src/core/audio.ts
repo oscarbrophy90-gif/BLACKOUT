@@ -275,6 +275,30 @@ export class AudioSys {
     this.tone({ freq: 784, dur: 1.6, gain: 0.1, type: 'sine', delay: 0.8 })
   }
 
+  /** Podium fanfare: a rising brass-ish chord stack under the VICTORY card. */
+  fanfare(): void {
+    const chord = [262, 330, 392, 523, 659, 784]
+    chord.forEach((f, i) => this.tone({ freq: f, dur: 2.2, gain: 0.07, type: 'sawtooth', delay: i * 0.07 }))
+    ;[1047, 1319, 1568].forEach((f, i) => this.tone({ freq: f, dur: 1.2, gain: 0.05, type: 'triangle', delay: 0.9 + i * 0.12 }))
+    this.tone({ freq: 55, dur: 2.4, gain: 0.12, type: 'sine' })
+  }
+
+  /** Camera whoosh for cinematic cuts. */
+  whoosh(): void {
+    this.tone({ freq: 180, freqEnd: 40, dur: 0.6, gain: 0.08, type: 'sawtooth' })
+  }
+
+  /** Short stinger when a podium place lights up. */
+  stinger(high = false): void {
+    this.tone({ freq: high ? 1046 : 523, freqEnd: high ? 1568 : 784, dur: 0.35, gain: 0.09, type: 'triangle' })
+  }
+
+  /** Shop rotation refresh sweep. */
+  refresh(): void {
+    this.tone({ freq: 300, freqEnd: 1200, dur: 0.5, gain: 0.06, type: 'sine' })
+    this.tone({ freq: 900, dur: 0.25, gain: 0.05, type: 'triangle', delay: 0.5 })
+  }
+
   defeat(): void {
     this.tone({ freq: 330, freqEnd: 165, dur: 1.2, gain: 0.14, type: 'triangle' })
     this.tone({ freq: 65, dur: 1.4, gain: 0.12, type: 'sine' })

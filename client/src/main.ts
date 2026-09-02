@@ -8,7 +8,8 @@ import type { MatchResult } from './game/match.ts'
 import { Profile } from './meta/data.ts'
 import { Hud } from './ui/hud.ts'
 import { Lobby } from './ui/lobby.ts'
-import { deathScreen, deployScreen, pauseScreen, resultsScreen } from './ui/screens.ts'
+import { runEnding } from './ui/podium.ts'
+import { deathScreen, deployScreen, pauseScreen } from './ui/screens.ts'
 
 // Boot + the state machine: DEPOT (lobby) → deploy → match → results → DEPOT.
 
@@ -101,10 +102,22 @@ function endMatch(result: MatchResult): void {
   const m = match
   match = null
   m.dispose()
-  resultsScreen(ui, result, rewards, completed, profile, () => {
+  // Victory card → podium → summary (or straight to the summary), then the depot.
+  runEnding(engine, ui, result, rewards, completed, profile, () => {
     document.body.classList.add('in-lobby')
     lobby.show()
   })
+}
+
+// `?debug` exposes a tiny QA surface for automated checks (never in normal play).
+if (new URLSearchParams(location.search).has('debug')) {
+  ;(window as unknown as { __blackout: unknown }).__blackout = {
+    profile,
+    info: () => match?.debugInfo() ?? null,
+    finish: (place: number) => match?.debugFinish(place),
+    gotoLoot: () => match?.debugGotoLoot() ?? null,
+    setCoins: (n: number) => profile.debugSetCoins(n),
+  }
 }
 
 // Click to (re)capture the mouse during a match.

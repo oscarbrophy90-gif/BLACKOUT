@@ -28,18 +28,19 @@ profile. Next:
 - [ ] Leaderboards (server), match history browser
 - [ ] Achievement wall + showcase on the profile
 
-## Phase 5 — Cosmetics (base shipped, expand)
-Shipped: 12 weapon skins, 10 suits, 8 charms, 6 emotes, rotating shop.
-Next:
+## Phase 5 — Cosmetics ✅ (this repo)
+Shipped: the 2,000-item catalogue (500 win celebrations, 500 emotes, 500
+weapon skins, 500 accessories, exact rarity quotas, validator), 10 suits,
+the 15-minute rotating shop (20 per category, Mythic/Exotic luck rolls,
+live countdown), 3D previews, in-match emotes (B), the podium with
+equipped celebrations. Next:
 - [ ] Cosmetic crate opening ceremony (separate from gameplay crates)
-- [ ] Per-piece character customization (head/body/legs/accessories)
-- [ ] Animated Surge-Rated skin shaders; emote playback in-match
-- [ ] Hundreds more charms/skins — the pipeline is data-only
+- [ ] More catalogue content — the pipeline is data-only (add recipes,
+      run `check-catalog.mjs`)
 
 ## Phase 6 — Polish
 - [ ] Weather fronts (rain that muffles emissions — design carefully!)
 - [ ] Day cycle drifting the dusk; sunrise finale on the final circle
-- [ ] Interior floors for the big Filament Row towers
 - [ ] Vault event under Substation Zero; Golden/Mystery crates
 - [ ] Duos/Squads, Quick Match (small circle), Training Range
 - [ ] Gun attachments (scopes/mags/grips found as loot)

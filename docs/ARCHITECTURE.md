@@ -31,12 +31,21 @@ client/src/
     audio.ts             every sound synthesized with WebAudio at runtime
   meta/
     data.ts              Profile: persistent save (localStorage), XP/coins/
-                         cosmetics/challenges; schema mirrors docs/DATABASE.md
+                         catalogue cosmetics/challenges; mirrors docs/DATABASE.md
+  character/
+    rig.ts               the Linewalker rig: 11 joints, attachment sockets
+    moves.ts             every MoveId as keyframed poses
+    props.ts / accessories.ts / effects.ts
+                         every PropId / ShapeId / EffectId as a small builder
+    animator.ts          plays an AnimSpec: sequencing, props, effects, camera
   world/
     terrain.ts           analytic heightfield heightAt(x,z) + 8 districts;
                          the island is identical every match by design
     builder.ts           all structures as instanced primitives + AABBs +
                          loot/crate spawn points + Blackout edge-glow
+    buildings.ts         the enterable-building kit: walls with doors and
+                         windows, slabs with stairwells, rooms, door registry
+    particles.ts         one configurable CPU particle emitter for everything
     collision.ts         hash-grid AABB world: capsule slide, ground snap,
                          raycast (bullets), line-of-sight (bots)
     sky.ts               dusk dome, stars, clouds, THE render switch to ink
@@ -48,7 +57,8 @@ client/src/
     blackout.ts          BlackoutCycle (the clock) + Emissions (the one
                          luminance scalar per actor — the sensory contract)
     zone.ts              ZoneController: Deadgrid phases, Grid Shimmer wall
-    loot.ts              floor loot (one InstancedMesh), crates, supply drops
+    loot.ts              floor loot (per-class weapon models + rarity outline
+                         instances), crates, supply drops, bot pickup queries
   player/
     controller.ts        FPS movement: walk/sprint/crouch/slide/jump, bob
     player.ts            vitals, heal channelling, damage intake
@@ -56,7 +66,9 @@ client/src/
   weapons/
     weapons.ts           firing, spread/bloom, recoil, reload, melee; hits
                          resolve against TargetField (bots today, snapshots later)
-    viewmodel.ts         procedural first-person gun models, skins, charms
+    viewmodel.ts         first-person gun, painted by the equipped skin
+    models.ts            the one weapon part list behind viewmodel/floor/preview
+    skins.ts             procedural skin textures, finishes, emissives, particles
   bots/
     bots.ts              99 Linewalkers; embodied (≤22 near you: full sim,
                          real raycasts) vs abstract (2 Hz: rotate, gear up,
@@ -64,9 +76,19 @@ client/src/
   ui/
     hud.ts               vitals/ammo/minimap/compass/killfeed/crosshair/…
     lobby.ts             DEPOT: play, loadout, shop, contracts, profile, settings
-    screens.ts           deploy map, death, results, pause overlays
+    shop.ts              4 categories × 20 items, 15-minute rotation + countdown
+    loadout.ts           owned items by category, equip/unequip
+    cards.ts             NAME / ★ RARITY / PRICE / [BUY] card markup
+    preview.ts           the shared 3D viewport (rig or skinned weapon)
+    podium.ts            VICTORY card → podium celebration → match summary
+    screens.ts           deploy map, death, pause overlays
     map.ts               shared top-down island renderer
 ```
+
+The catalogue itself lives in `shared/src/catalog/` (vocabulary, schema,
+validator, four 500-item files) and the rotation logic in
+`shared/src/shop.ts`; `shared/scripts/check-catalog.mjs <category>` runs
+the validator standalone.
 
 ## The rules that keep this scalable
 

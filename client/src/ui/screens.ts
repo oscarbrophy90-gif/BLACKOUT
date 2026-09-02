@@ -1,12 +1,11 @@
-import type { ChallengeDef, MatchRewards } from '@blackout/shared'
 import { audio } from '../core/audio.ts'
-import type { MatchResult } from '../game/match.ts'
 import type { Profile } from '../meta/data.ts'
 import { ISLAND_RADIUS } from '../config.ts'
 import { heightAt } from '../world/terrain.ts'
 import { mapToWorld, renderIslandBase, worldToMap } from './map.ts'
 
-// Full-screen overlays around the match: deploy map, results, pause.
+// Full-screen overlays around the match: deploy map, death, pause.
+// (The results/summary live in podium.ts with the ending sequence.)
 
 function overlay(cls: string, parent: HTMLElement): HTMLElement {
   const e = document.createElement('div')
@@ -129,51 +128,6 @@ export function deathScreen(
     onLeave()
   })
   return () => root.remove()
-}
-
-/** The end-of-match report: placement, rewards, XP bar, contracts. */
-export function resultsScreen(
-  parent: HTMLElement,
-  result: MatchResult,
-  rewards: MatchRewards,
-  completed: ChallengeDef[],
-  profile: Profile,
-  onContinue: () => void,
-): void {
-  const root = overlay('results', parent)
-  const won = result.won
-  const lvl = profile.level
-  const breakdown = rewards.breakdown
-    .map((b) => `<div class="xp-row"><span>${b.label}</span><b>+${b.xp} XP</b></div>`)
-    .join('')
-  const contracts = completed.length
-    ? `<div class="contracts"><h3>CONTRACTS COMPLETE</h3>${completed.map((c) => `<div class="xp-row"><span>${c.label}</span><b>+${c.coins} ⬡</b></div>`).join('')}</div>`
-    : ''
-  root.innerHTML = `
-    <div class="results-card ${won ? 'won' : ''}">
-      <h1>${won ? 'LAST LIGHT ON VANTERA' : 'CONTRACT TERMINATED'}</h1>
-      <div class="place-line">${won ? 'VICTORY' : `#${result.outcome.placement} of ${result.outcome.players}`}</div>
-      <div class="stats-line">
-        <span><b>${result.outcome.kills}</b> elims</span>
-        <span><b>${Math.floor(result.outcome.survivalSeconds / 60)}:${String(Math.floor(result.outcome.survivalSeconds % 60)).padStart(2, '0')}</b> survived</span>
-        <span><b>${result.metrics.blackoutKills}</b> blackout elims</span>
-        <span><b>${result.outcome.cratesOpened}</b> crates</span>
-      </div>
-      ${won ? '' : result.winnerName ? `<p class="winner-line">Winner: <b>${result.winnerName}</b></p>` : '<p class="winner-line">Contract abandoned — the grid never chose a last light.</p>'}
-      <div class="xp-block">${breakdown}</div>
-      <div class="coin-line">+${rewards.coins} ⬡ SALVAGE</div>
-      ${contracts}
-      <div class="level-block">
-        <div class="level-label">LEVEL ${lvl.level}</div>
-        <div class="level-bar"><div class="level-fill" style="width:${(lvl.into / lvl.needed) * 100}%"></div></div>
-      </div>
-      <button class="btn primary continue-btn">RETURN TO THE DEPOT</button>
-    </div>`
-  root.querySelector('.continue-btn')!.addEventListener('click', () => {
-    audio.ui('click')
-    root.remove()
-    onContinue()
-  })
 }
 
 /** Esc pause. Returns a closer; callbacks fire at most once. */

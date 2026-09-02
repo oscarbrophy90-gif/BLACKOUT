@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import {
-  CHARMS, RARITY_RANK, WEAPON_BY_ID, ZONE_PHASES, deriveSeed, emptyMetrics, makeRng,
+  RARITY_RANK, SUITS, WEAPON_BY_ID, ZONE_PHASES, deriveSeed, emptyMetrics, makeRng,
 } from '@blackout/shared'
 import type { MatchMetrics, MatchOutcome, Rng } from '@blackout/shared'
+import { CharacterAnimator } from '../character/animator.ts'
+import { CharacterRig } from '../character/rig.ts'
 import { GRACE_BEFORE_ZONE, HEARTBEAT_RANGE, MATCH_PLAYERS } from '../config.ts'
 import { audio } from '../core/audio.ts'
 import type { Engine } from '../core/engine.ts'
@@ -10,6 +12,7 @@ import { clearAllHandlers, emit, on } from '../core/events.ts'
 import type { Input } from '../core/input.ts'
 import type { Profile } from '../meta/data.ts'
 import { BotManager } from '../bots/bots.ts'
+import type { Bot } from '../bots/bots.ts'
 import { FPSController } from '../player/controller.ts'
 import { LocalPlayer } from '../player/player.ts'
 import { Viewmodel } from '../weapons/viewmodel.ts'
@@ -27,6 +30,15 @@ import { ZoneController } from './zone.ts'
 // MatchManager: one instance per contract. Owns every per-match system and
 // the phase flow: drop → live → spectate → ended.
 
+/** Who stood where when the grid went quiet — drives the podium. */
+export interface FinisherInfo {
+  name: string
+  isPlayer: boolean
+  suitId: string
+  celebrationId: string
+  accessoryIds: string[]
+}
+
 export interface MatchResult {
   outcome: MatchOutcome
   metrics: MatchMetrics
@@ -34,7 +46,14 @@ export interface MatchResult {
   winnerName: string
   killedBy: string | null
   won: boolean
+  /** Top three, index 0 = 1st place. Empty when the contract was abandoned. */
+  podium: FinisherInfo[]
+  /** Everything the player picked up: distinct weapons (name + rarity) and a count of supplies. */
+  collected: { weapons: { name: string; rarity: string }[]; items: number }
 }
+
+/** How long a looping emote runs before the Linewalker gets back to work. */
+const EMOTE_MAX_SECONDS = 7
 
 export interface HudState {
   health: number
@@ -95,6 +114,9 @@ export class Match {
   private diedAt = 0
   private supplyDropsDone = new Set<number>()
   private unsubs: (() => void)[] = []
+  private collectedWeapons = new Map<string, { name: string; rarity: string }>()
+  private collectedItems = 0
+  private emote: { anim: CharacterAnimator; rig: CharacterRig; holder: THREE.Group; t: number } | null = null
   private tmp = new THREE.Vector3()
   private fovCurrent: number
   onEnded: ((result: MatchResult) => void) | null = null
@@ -158,6 +180,7 @@ export class Match {
       crouching: false,
     }
     this.bots.onPlayerDamaged = (amount, mult, angle, name) => {
+      this.stopEmote()
       this.player.takeDamage(amount, mult, angle - this.controller.yaw, name, this.matchTime)
     }
     this.player.onDeath = () => this.onPlayerDeath()
@@ -240,11 +263,45 @@ export class Match {
   }
 
   private refreshHeld(): void {
-    const charm = CHARMS.find((c) => c.id === this.profile.equipped.charm) ?? null
-    this.weapons.refreshViewmodel(this.profile.equipped.weaponSkin, charm)
+    this.weapons.refreshViewmodel(this.profile.weaponSkin())
+  }
+
+  // ——— Emotes: B plays the equipped emote in third person ———
+
+  private startEmote(): void {
+    if (this.emote || !this.player.alive || this.phaseState.phase !== 'live' || !this.controller.grounded) return
+    const suit = this.profile.suit()
+    const rig = new CharacterRig({ body: suit.colors[0], trim: suit.colors[1], visor: suit.colors[2] })
+    // The rig animates relative to a holder planted where the player stands
+    // (poses drive the rig root's own offsets, so it can't sit in the scene directly).
+    const holder = new THREE.Group()
+    holder.position.copy(this.controller.pos)
+    holder.rotation.y = this.controller.yaw
+    holder.add(rig.root)
+    this.engine.scene.add(holder)
+    const anim = new CharacterAnimator(holder, rig)
+    anim.setAccessories(this.profile.accessories().map((a) => a.acc))
+    anim.play(this.profile.emote().anim, { loop: true })
+    this.emote = { anim, rig, holder, t: 0 }
+    this.player.cancelChannel()
+    this.controller.frozen = true
+    this.viewmodel.group.visible = false
+    // Showing off is loud on the grid: emoting lights you up like a sprint.
+    this.emissions.setMove('player', 0.5)
+  }
+
+  private stopEmote(): void {
+    if (!this.emote) return
+    this.emote.anim.dispose()
+    this.engine.scene.remove(this.emote.holder)
+    this.emote.rig.dispose()
+    this.emote = null
+    this.controller.frozen = false
+    this.viewmodel.group.visible = true
   }
 
   private onPlayerDeath(): void {
+    this.stopEmote()
     this.placementAtDeath = this.bots.aliveCount() + 1
     this.diedAt = this.matchTime
     if (this.bots.player) this.bots.player.alive = false
@@ -260,6 +317,48 @@ export class Match {
   applySettings(): void {
     this.controller.sensitivity = this.profile.settings.sensitivity
     this.controller.invertY = this.profile.settings.invertY
+  }
+
+  /** QA hook (main.ts, `?debug`): resolve the contract now at the given placement. */
+  debugFinish(place: number): void {
+    if (this.phaseState.phase === 'ended') return
+    if (place <= 1) {
+      this.end(true)
+      return
+    }
+    const alive = this.bots.aliveBots()
+    for (let i = place - 1; i < alive.length; i++) this.bots.debugKill(alive[i].id)
+    if (this.player.alive) this.player.takeEnvironmentalDamage(1e6, 'the Deadgrid')
+  }
+
+  /** QA hook: stand 1.4 m from the nearest floor weapon, facing it. */
+  debugGotoLoot(): { x: number; y: number; z: number; buildingId: number | null } | null {
+    const p = this.controller.pos
+    const target = this.loot.debugNearestWeapon(p.x, p.z)
+    if (!target) return null
+    const ang = Math.random() * Math.PI * 2
+    const nx = target.x + Math.cos(ang) * 1.4
+    const nz = target.z + Math.sin(ang) * 1.4
+    const y = this.col.groundHeight(nx, nz, target.y + 0.6, 0.45, target.y + 0.6)
+    this.stopEmote()
+    this.controller.pos.set(nx, y, nz)
+    this.controller.vel.set(0, 0, 0)
+    // Facing = (-sin yaw, -cos yaw): look straight at the item, slightly down.
+    this.controller.yaw = Math.atan2(-(target.x - nx), -(target.z - nz))
+    this.controller.pitch = -0.35
+    return target
+  }
+
+  /** QA hook: the loot race and the phase, for automated checks. */
+  debugInfo(): { phase: string; alive: number; armed: number; landed: boolean; emoting: boolean; y: number } {
+    return {
+      phase: this.phaseState.phase,
+      alive: this.bots.aliveCount(),
+      armed: this.bots.armedCount(),
+      landed: this.landed,
+      emoting: this.emote !== null,
+      y: this.controller.pos.y,
+    }
   }
 
   /** Called by main when the player chooses to leave spectate. */
@@ -289,6 +388,7 @@ export class Match {
     const resolved = won || (!this.player.alive && this.bots.aliveCount() <= 1)
     const winnerName = won ? this.profile.name : resolved ? this.bots.aliveBots()[0]?.name ?? 'nobody' : ''
     if (won) audio.victory()
+    this.stopEmote()
     this.onEnded?.({
       outcome,
       metrics: this.metrics,
@@ -296,12 +396,37 @@ export class Match {
       winnerName,
       killedBy: this.player.lastHitBy,
       won,
+      podium: resolved ? this.podium(won, placement) : [],
+      collected: { weapons: [...this.collectedWeapons.values()], items: this.collectedItems },
     })
+  }
+
+  /** Rank everyone who finished top three: the last light, then the last to fall. */
+  private podium(won: boolean, placement: number): FinisherInfo[] {
+    const botInfo = (b: Bot): FinisherInfo => ({
+      name: b.name,
+      isPlayer: false,
+      suitId: SUITS[b.suitIndex].id,
+      celebrationId: b.celebrationId,
+      accessoryIds: b.accessoryId ? [b.accessoryId] : [],
+    })
+    const me: FinisherInfo = {
+      name: this.profile.name,
+      isPlayer: true,
+      suitId: this.profile.equipped.suit,
+      celebrationId: this.profile.equipped.celebration,
+      accessoryIds: [...this.profile.equipped.accessories],
+    }
+    // Bots ranked best-first: whoever is still standing, then deaths latest-first.
+    const ranked: FinisherInfo[] = [...this.bots.aliveBots().map(botInfo), ...this.bots.deathOrder.slice().reverse().map(botInfo)]
+    ranked.splice(won ? 0 : Math.max(0, placement - 1), 0, me)
+    return ranked.slice(0, 3)
   }
 
   /** Full teardown: scene, listeners, viewmodel, ambience beds. */
   dispose(): void {
     for (const u of this.unsubs) u()
+    this.stopEmote()
     this.loot.dispose()
     clearAllHandlers()
     // The audio singleton outlives the match — silence its continuous beds
@@ -323,7 +448,7 @@ export class Match {
 
     this.sky.update(dt)
     this.fx.update(dt)
-    this.loot.update(dt)
+    this.loot.update(dt, cam.position)
     this.emissions.update(dt)
 
     if (this.landed) {
@@ -393,7 +518,18 @@ export class Match {
     }
 
     // Camera.
-    if (this.phaseState.phase === 'spectate') {
+    if (this.emote) {
+      // Third person: hang back over the shoulder and drift around the show.
+      const r = this.emote.holder
+      const yaw = this.controller.yaw + Math.sin(this.emote.t * 0.6) * 0.55
+      const dist = 3.4
+      const cx = r.position.x + Math.sin(yaw) * dist
+      const cz = r.position.z + Math.cos(yaw) * dist
+      const cy = r.position.y + 1.7
+      const ground = this.col.groundHeight(cx, cz, cy + 0.5, 0.3, cy + 2)
+      cam.position.set(cx, Math.max(cy, ground + 0.4), cz)
+      cam.lookAt(r.position.x, r.position.y + 1.05, r.position.z)
+    } else if (this.phaseState.phase === 'spectate') {
       const b = this.spectateTarget ? this.bots.bots.get(this.spectateTarget) : null
       if (b?.alive) {
         cam.position.set(b.pos.x, b.pos.y + 1.55, b.pos.z)
@@ -423,6 +559,18 @@ export class Match {
 
   private updateLive(dt: number): void {
     const input = this.input
+    if (input.justPressed('KeyB')) {
+      if (this.emote) this.stopEmote()
+      else this.startEmote()
+    }
+    if (this.emote) {
+      this.emote.t += dt
+      this.emote.anim.update(dt)
+      const moved = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].some((k) => input.isDown(k))
+      if (moved || input.mouseJustPressed(0) || this.emote.t > EMOTE_MAX_SECONDS) this.stopEmote()
+      // Still a target while showing off: the grid, the zone and the bots keep ticking.
+      input.consumeMouse()
+    }
     this.controller.update(dt, input, this.col, this.weapons.adsFactor)
     this.metrics.distance += Math.hypot(this.controller.vel.x, this.controller.vel.z) * dt
 
@@ -435,15 +583,14 @@ export class Match {
     if (this.player.channel) this.emissions.report('player', 'heal', 0.5)
 
     this.weapons.update(dt, input, {
-      skinId: this.profile.equipped.weaponSkin,
-      charm: CHARMS.find((c) => c.id === this.profile.equipped.charm) ?? null,
-      frozen: this.player.channel !== null,
+      skin: this.profile.weaponSkin(),
+      frozen: this.player.channel !== null || this.emote !== null,
       time: this.matchTime,
     })
     this.viewmodel.update({ moveFactor: mf, adsFactor: this.weapons.adsFactor, dt, time: this.matchTime })
 
     // Interaction.
-    if (input.justPressed('KeyE')) this.tryInteract()
+    if (input.justPressed('KeyE') && !this.emote) this.tryInteract()
     if (input.justPressed('Digit4')) {
       if (!this.player.startHeal('trickle')) this.player.startHeal('medloop')
     }
@@ -485,9 +632,12 @@ export class Match {
         this.player.inv.active = slot
         this.refreshHeld()
         if (RARITY_RANK[lootItem.rarity] >= RARITY_RANK.rare) this.metrics.rareWeaponsFound++
+        const def = WEAPON_BY_ID.get(lootItem.weaponId)
+        if (def) this.collectedWeapons.set(`${def.id}:${lootItem.rarity}`, { name: def.name, rarity: lootItem.rarity })
         break
       }
       case 'ammo': {
+        this.collectedItems++
         const taken = this.player.inv.addAmmo(lootItem.ammo, lootItem.amount)
         if (taken < lootItem.amount) {
           this.loot.spawnFloor({ ...lootItem, amount: lootItem.amount - taken }, origin.x, origin.z, origin.y)
@@ -495,6 +645,7 @@ export class Match {
         break
       }
       case 'heal': {
+        this.collectedItems++
         const taken = this.player.inv.addHeal(lootItem.healId, lootItem.amount)
         if (taken < lootItem.amount) {
           this.loot.spawnFloor({ ...lootItem, amount: lootItem.amount - taken }, origin.x, origin.z, origin.y)
@@ -502,6 +653,7 @@ export class Match {
         break
       }
       case 'armor':
+        this.collectedItems++
         this.player.applyArmorPickup(lootItem.armorId)
         break
     }

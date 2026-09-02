@@ -24,8 +24,8 @@ so Phase 3 lifts it into a real database without a migration puzzle.
 ### Cosmetics
 | field | notes |
 |---|---|
-| owned | cosmetic ids (weapon skins, suits, charms, emotes) |
-| equipped | { weaponSkin, suit, charm?, emote } |
+| owned | catalogue ids (WC_/EM_/WS_/AC_ — see `shared/src/catalog/`) |
+| equipped | { suit, celebration, emote, weaponSkin, accessories[] (one per slot) } |
 
 Purchases validate against `shared/src/cosmetics.ts` prices server-side.
 

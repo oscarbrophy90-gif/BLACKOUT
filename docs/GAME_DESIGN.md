@@ -127,5 +127,54 @@ mechanic is the game's best-looking moment — that is on purpose.
 - **Salvage (⬡)** — the cosmetic currency. Earned only by playing.
 - **Contracts** — 3 daily + 3 weekly challenges, seeded deterministically
   per day/week. Blackout eliminations get their own contracts.
-- **Cosmetics are pure paint**: weapon skins, suits, charms, emotes. No
-  stat touches gameplay, ever. Shop rotates 6 slots daily (seeded).
+- **Cosmetics are pure paint**: suits plus a 2,000-item catalogue — 500
+  win celebrations, 500 emotes, 500 weapon skins, 500 accessories. No stat
+  touches gameplay, ever.
+
+### The catalogue (2,000 unique items)
+
+Every item is a *recipe* over a fixed vocabulary, not a label: a
+celebration or emote is 1–6 keyframed moves + props + layered effects + a
+palette + a camera; a weapon skin is a procedural pattern + palette +
+PBR finish + emissive behaviour + particle emitter; an accessory is a
+slot + parametric shape + palette + motion + particles. Two items with the
+same recipe are the same design, and the validator forbids it — recolours
+are not items. Per category the rarity split is fixed: Common 200 ·
+Uncommon 120 · Rare 80 · Epic 50 · Legendary 35 · Mythic 10 · Exotic 5.
+Complexity climbs with rarity (commons are one or two moves; exotics stack
+three cinematic effects and a signature prop). Prices are per rarity:
+250 / 500 / 1,000 / 1,600 / 2,500 / 5,000 / 10,000 ⬡.
+
+### The shop
+
+Four categories, **20 items each**, and a **completely new draw every
+15 minutes** — the countdown sits top-left ("SHOP REFRESHES IN 14:32"),
+and at zero the grid flips through "REFRESHING SHOP...". The draw is
+rarity-weighted Common → Legendary; a **Mythic** appears in one category
+about one rotation in ten, an **Exotic** about one in forty, and both
+together is a genuine event. Every rotation is seeded by its 15-minute
+key, so every client (and a future server) agrees on the same shop.
+
+## Buildings and the loot race
+
+Structures are real interiors: doors, windows, rooms, stairwells and
+upper floors, with loot on the floor and crates in the rooms. Different
+kits carry different loot (houses: supplies; warehouses/hangars: crates;
+bunkers: the good stuff). **Every Linewalker drops in empty-handed** —
+the 99 rivals run the same loop you do: land → search buildings and
+crates → find a weapon → gear up → fight → rotate → survive → win. Bots
+enter through doors, search rooms, pick up what they find, upgrade to
+better guns, and adapt their engagement range to the class they hold.
+Floor weapons are the actual weapon model with a rarity-coloured outline
+(a glow from Rare up, a dark-visible beam from Legendary up).
+
+## Endings
+
+- **Win** → a VICTORY card with your callsign (camera crane, fanfare,
+  confetti) → the podium, your Linewalker on 1st performing your equipped
+  win celebration → NEXT → the match summary (placement, eliminations,
+  XP, salvage, weapons collected, stats) → RETURN TO MAIN MENU.
+- **2nd / 3rd** → the same podium, the winner performing *their*
+  celebration on 1st while you stand on your step; SKIP jumps straight to
+  the summary.
+- **Anything lower** → straight to the summary.

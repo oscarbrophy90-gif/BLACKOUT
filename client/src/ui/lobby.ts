@@ -1,10 +1,9 @@
-import {
-  CHARMS, EMOTES, RARITY_CERT, RARITY_COLOR, SUITS, WEAPON_BY_ID,
-  WEAPON_SKINS, shopForDay,
-} from '@blackout/shared'
-import type { Rarity } from '@blackout/shared'
+import { WEAPON_BY_ID } from '@blackout/shared'
 import { audio } from '../core/audio.ts'
 import type { Profile } from '../meta/data.ts'
+import { LoadoutPanel } from './loadout.ts'
+import { Preview3D } from './preview.ts'
+import { ShopPanel } from './shop.ts'
 
 // The depot between contracts: play, loadout, shop, contracts (challenges),
 // profile, settings. Plain DOM; every panel rerenders from Profile state.
@@ -16,6 +15,10 @@ export class Lobby {
   private profile: Profile
   private onPlay: () => void
   private panel: Panel = 'main'
+  /** One 3D viewport shared by the depot, the loadout and the shop. */
+  private preview = new Preview3D()
+  private shop: ShopPanel
+  private loadout: LoadoutPanel
 
   constructor(parent: HTMLElement, profile: Profile, onPlay: () => void) {
     this.profile = profile
@@ -23,6 +26,8 @@ export class Lobby {
     this.root = document.createElement('div')
     this.root.className = 'screen lobby'
     parent.appendChild(this.root)
+    this.shop = new ShopPanel(this.root, profile, this.preview, () => this.nav('main'), () => this.coinChips())
+    this.loadout = new LoadoutPanel(this.root, profile, this.preview, () => this.nav('main'), () => this.header())
     this.render()
   }
 
@@ -33,50 +38,48 @@ export class Lobby {
   }
 
   hide(): void {
+    this.shop.dispose()
+    this.preview.unmount()
     this.root.style.display = 'none'
   }
 
   dispose(): void {
+    this.shop.dispose()
+    this.preview.dispose()
     this.root.remove()
   }
 
   private nav(to: Panel): void {
     audio.ui('click')
+    if (this.panel === 'shop') this.shop.dispose()
     this.panel = to
     this.render()
   }
 
-  private rarityBadge(r: Rarity): string {
-    return `<span class="badge" style="background:${RARITY_COLOR[r]}22;color:${RARITY_COLOR[r]};border-color:${RARITY_COLOR[r]}55">${RARITY_CERT[r].toUpperCase()}</span>`
-  }
-
   private characterPreview(): string {
-    const suit = SUITS.find((s) => s.id === this.profile.equipped.suit) ?? SUITS[0]
-    const [body, trim, visor] = suit.colors
+    const suit = this.profile.suit()
+    const worn = this.profile.accessories()
     return `
       <div class="char-preview">
-        <div class="char">
-          <div class="char-head" style="background:${trim}"><div class="char-visor" style="background:${visor};box-shadow:0 0 12px ${visor}"></div></div>
-          <div class="char-torso" style="background:${body};border-color:${trim}"></div>
-          <div class="char-arm l" style="background:${body}"></div>
-          <div class="char-arm r" style="background:${body}"></div>
-          <div class="char-leg l" style="background:${trim}"></div>
-          <div class="char-leg r" style="background:${trim}"></div>
-        </div>
+        <div class="preview-host depot-preview"></div>
         <div class="char-name">${this.profile.name}</div>
-        <div class="char-suit">${suit.name}</div>
+        <div class="char-suit">${suit.name}${worn.length ? ` · ${worn.map((a) => a.name).join(', ')}` : ''}</div>
+        <div class="char-suit">Celebration: ${this.profile.celebration().name} · Emote: ${this.profile.emote().name}</div>
       </div>`
   }
 
-  private header(): string {
+  private coinChips(): string {
     const lvl = this.profile.level
+    return `
+      <div class="level-chip">LVL ${lvl.level}<div class="level-mini"><div style="width:${(lvl.into / lvl.needed) * 100}%"></div></div></div>
+      <div class="coin-chip">⬡ ${this.profile.coins.toLocaleString('en-US')}</div>`
+  }
+
+  private header(): string {
     return `
       <div class="lobby-head">
         <div class="logo">BLACK<span>OUT</span></div>
-        <div class="head-right">
-          <div class="level-chip">LVL ${lvl.level}<div class="level-mini"><div style="width:${(lvl.into / lvl.needed) * 100}%"></div></div></div>
-          <div class="coin-chip">⬡ ${this.profile.coins}</div>
-        </div>
+        <div class="head-right">${this.coinChips()}</div>
       </div>`
   }
 
@@ -86,10 +89,10 @@ export class Lobby {
         this.renderMain()
         break
       case 'loadout':
-        this.renderLoadout()
+        this.loadout.render()
         break
       case 'shop':
-        this.renderShop()
+        this.shop.render()
         break
       case 'contracts':
         this.renderContracts()
@@ -121,7 +124,10 @@ export class Lobby {
           <button class="btn menu-btn" data-p="settings">SETTINGS</button>
         </div>
       </div>
-      <div class="lobby-foot">Vantera's grid dies tonight. Be the last light. · WASD move · SHIFT sprint · C slide · E loot · 4/5 heal</div>`
+      <div class="lobby-foot">Vantera's grid dies tonight. Be the last light. · WASD move · SHIFT sprint · C slide · E loot · 4/5 heal · B emote</div>`
+    this.preview.mount(this.root.querySelector('.depot-preview') as HTMLElement)
+    this.preview.setAccent('#39f0e0')
+    this.preview.showCharacter({ suit: this.profile.suit(), accessories: this.profile.accessories().map((a) => a.acc), anim: null })
     this.root.querySelector('.play-btn')!.addEventListener('click', () => {
       audio.ensure()
       audio.ui('click')
@@ -129,92 +135,6 @@ export class Lobby {
     })
     this.root.querySelectorAll('.menu-btn').forEach((b) =>
       b.addEventListener('click', () => this.nav((b as HTMLElement).dataset.p as Panel)),
-    )
-  }
-
-  private grid<T extends { id: string; name: string; rarity: Rarity }>(
-    items: readonly T[],
-    equippedId: string | null,
-    kind: 'weaponSkin' | 'suit' | 'charm' | 'emote',
-    swatch: (item: T) => string,
-  ): string {
-    return items
-      .map((item) => {
-        const owned = this.profile.owns(item.id)
-        const equipped = equippedId === item.id
-        return `
-        <div class="card ${owned ? '' : 'locked'} ${equipped ? 'equipped' : ''}" data-kind="${kind}" data-id="${item.id}">
-          ${swatch(item)}
-          <div class="card-name">${item.name}</div>
-          ${this.rarityBadge(item.rarity)}
-          <div class="card-state">${equipped ? 'EQUIPPED' : owned ? 'TAP TO EQUIP' : 'IN SHOP ROTATION'}</div>
-        </div>`
-      })
-      .join('')
-  }
-
-  private renderLoadout(): void {
-    const eq = this.profile.equipped
-    this.root.innerHTML = `
-      ${this.header()}
-      <div class="panel">
-        <div class="panel-head"><button class="btn ghost back-btn">← DEPOT</button><h2>LOADOUT</h2></div>
-        <p class="panel-note">Cosmetics only — every gun on Vantera is found, never brought.</p>
-        <h3>WEAPON SKIN</h3><div class="cards">${this.grid(WEAPON_SKINS, eq.weaponSkin, 'weaponSkin', (s) => `<div class="swatch"><i style="background:${s.colors[0]}"></i><i style="background:${s.colors[1]}"></i><i style="background:${s.colors[2]};box-shadow:0 0 10px ${s.colors[2]}"></i></div>`)}</div>
-        <h3>SUIT</h3><div class="cards">${this.grid(SUITS, eq.suit, 'suit', (s) => `<div class="swatch"><i style="background:${s.colors[0]}"></i><i style="background:${s.colors[1]}"></i><i style="background:${s.colors[2]};box-shadow:0 0 10px ${s.colors[2]}"></i></div>`)}</div>
-        <h3>CHARM</h3><div class="cards">${this.grid(CHARMS, eq.charm, 'charm', (c) => `<div class="swatch"><i style="background:${c.color};box-shadow:0 0 10px ${c.color}"></i></div>`)}</div>
-        <h3>EMOTE</h3><div class="cards">${this.grid(EMOTES, eq.emote, 'emote', () => `<div class="swatch"><i style="background:#7d6bff"></i></div>`)}</div>
-      </div>`
-    this.backBtn()
-    this.root.querySelectorAll('.card:not(.locked)').forEach((c) =>
-      c.addEventListener('click', () => {
-        const kindStr = (c as HTMLElement).dataset.kind!
-        const id = (c as HTMLElement).dataset.id!
-        const kind = kindStr as 'weaponSkin' | 'suit' | 'charm' | 'emote'
-        if (kind === 'charm' && this.profile.equipped.charm === id) this.profile.equip('charm', null)
-        else this.profile.equip(kind, id)
-        audio.ui('equip')
-        this.render()
-      }),
-    )
-  }
-
-  private renderShop(): void {
-    const day = Math.floor(Date.now() / 86_400_000)
-    const entries = shopForDay(day)
-    const hoursLeft = 24 - new Date().getUTCHours()
-    this.root.innerHTML = `
-      ${this.header()}
-      <div class="panel">
-        <div class="panel-head"><button class="btn ghost back-btn">← DEPOT</button><h2>SHOP</h2><span class="rotate-note">rotates in ~${hoursLeft}h</span></div>
-        <p class="panel-note">Salvage (⬡) is earned by playing. Cosmetics never touch gameplay.</p>
-        <div class="cards shop-cards">
-          ${entries
-            .map((e) => {
-              const owned = this.profile.owns(e.id)
-              const afford = this.profile.coins >= e.price
-              return `
-              <div class="card shop-card ${owned ? 'owned' : afford ? '' : 'poor'}" data-id="${e.id}">
-                <div class="card-kind">${e.kind === 'weaponSkin' ? 'WEAPON SKIN' : e.kind.toUpperCase()}</div>
-                <div class="card-name">${e.name}</div>
-                ${this.rarityBadge(e.rarity)}
-                <div class="price">${owned ? 'OWNED' : `⬡ ${e.price}`}</div>
-              </div>`
-            })
-            .join('')}
-        </div>
-      </div>`
-    this.backBtn()
-    this.root.querySelectorAll('.shop-card:not(.owned)').forEach((c) =>
-      c.addEventListener('click', () => {
-        const id = (c as HTMLElement).dataset.id!
-        if (this.profile.buy(id)) {
-          audio.ui('buy')
-        } else {
-          audio.ui('deny')
-        }
-        this.render()
-      }),
     )
   }
 

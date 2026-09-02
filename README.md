@@ -22,9 +22,13 @@ Open **`dist-standalone/BLACKOUT.html`** in any desktop browser. One
 self-contained file — no install, no server, no network. Progress (XP,
 salvage, cosmetics, contracts) saves to your browser.
 
-The other 99 slots are filled by AI Linewalkers for now — they loot, gear
-up, rotate with the zone, fight each other, and obey the same
-light-visibility rules you do. The multiplayer architecture that replaces
+The other 99 slots are filled by AI Linewalkers for now — they drop in
+empty-handed like you, search buildings and crates for a gun, gear up,
+rotate with the zone, fight each other, and obey the same light-visibility
+rules you do. Buildings are real interiors (doors, rooms, stairs, upper
+floors) with their own loot. Win and your Linewalker takes the podium
+performing your equipped celebration; the shop behind it rotates 20 items
+per category every 15 minutes from a 2,000-item catalogue. The multiplayer architecture that replaces
 them with people is designed and documented (see below).
 
 ### Controls
@@ -40,6 +44,7 @@ them with people is designed and documented (see below).
 | E | loot / open crates |
 | 1 / 2 / 3 | weapon slots / maul |
 | 4 / 5 | heal health / recharge armor |
+| B | play your equipped emote (third person) |
 | Esc | pause |
 
 ### Run from source
@@ -47,7 +52,7 @@ them with people is designed and documented (see below).
 ```
 npm install
 npm run dev                # play at http://localhost:5173
-npm test                   # 34 rule + server tests
+npm test                   # 44 rule + server tests (catalogue, shop rotation, …)
 npm run typecheck          # strict TS across all packages
 npm run build:standalone   # regenerate dist-standalone/BLACKOUT.html
 npm run serve              # node server: http://localhost:3000
@@ -57,7 +62,7 @@ npm run serve              # node server: http://localhost:3000
 
 | | |
 |---|---|
-| `shared/` | every game rule as pure, tested TypeScript — the code a future authoritative server runs verbatim |
+| `shared/` | every game rule as pure, tested TypeScript — the code a future authoritative server runs verbatim; `shared/src/catalog/` is the 2,000-item cosmetic database |
 | `client/` | the game (Three.js + DOM, no other runtime deps) |
 | `server/` | Node stub: hosting, profile-store seam, Phase 3 home |
 | `docs/GAME_DESIGN.md` | the design bible — the Blackout Cycle's exact rules |

@@ -3,16 +3,18 @@ import {
   AMMO_LABEL, ARMOR_BY_ID, HEAL_BY_ID, RARITY_COLOR, RARITY_LABEL, RARITY_RANK,
   WEAPON_BY_ID, crateTierForGrade, dps, rollCrate, rollGroundItem,
 } from '@blackout/shared'
-import type { CrateTier, ItemKind, Rarity, Rng } from '@blackout/shared'
+import type { CrateTier, ItemKind, Rarity, Rng, WeaponClass } from '@blackout/shared'
 import { emit, on } from '../core/events.ts'
 import { audio } from '../core/audio.ts'
 import type { Fx } from '../world/fx.ts'
 import type { WorldData } from '../world/builder.ts'
 import { heightAt } from '../world/terrain.ts'
+import { mergedWeaponGeometry } from '../weapons/models.ts'
 
-// Everything lying on Vantera's ground: floor loot, crates, the supply drop.
-// Floor items live in one InstancedMesh; crates are a few dozen real groups
-// because their lids animate.
+// Everything lying on Vantera's ground. Floor items render as what they
+// ARE — a recognisable weapon model, an ammo tin, a med cell, a vest —
+// wrapped in a rarity-coloured outline (inverted hull) and, for Mil-Spec
+// and better, a glow sprite and a light column in the dark.
 
 export interface FloorLoot {
   id: number
@@ -21,7 +23,9 @@ export interface FloorLoot {
   y: number
   z: number
   rarity: Rarity
+  kind: VisualKind
   slot: number
+  buildingId: number | null
 }
 
 export interface CrateInst {
@@ -36,9 +40,13 @@ export interface CrateInst {
   lid: THREE.Mesh
   beam: THREE.Mesh | null
   falling: boolean
-  /** Rolled at open-time; spilled by update() when the lid finishes. */
   pending: ItemKind[] | null
+  buildingId: number | null
 }
+
+type VisualKind = WeaponClass | 'ammo' | 'heal' | 'armor'
+const KINDS: VisualKind[] = ['ar', 'smg', 'shotgun', 'sniper', 'dmr', 'pistol', 'ammo', 'heal', 'armor']
+const CAP: Record<VisualKind, number> = { ar: 260, smg: 260, shotgun: 200, sniper: 160, dmr: 200, pistol: 260, ammo: 500, heal: 420, armor: 260 }
 
 const TIER_RARITY: Record<CrateTier, Rarity> = {
   normal: 'common', rare: 'rare', epic: 'epic',
@@ -65,69 +73,126 @@ export function itemLabel(item: ItemKind): { label: string; rarity: Rarity } {
   }
 }
 
+function visualKind(item: ItemKind): VisualKind {
+  if (item.type === 'weapon') return WEAPON_BY_ID.get(item.weaponId)!.cls
+  return item.type
+}
+
+/** Non-weapon pickups get their own recognisable shapes. */
+function kindGeometry(kind: VisualKind): THREE.BufferGeometry {
+  if (kind === 'ammo') {
+    const g = new THREE.BoxGeometry(0.28, 0.16, 0.18)
+    const col = new Float32Array(g.attributes.position.count * 3).fill(0.35)
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    return g
+  }
+  if (kind === 'heal') {
+    const g = new THREE.CapsuleGeometry(0.07, 0.22, 3, 8)
+    g.rotateZ(Math.PI / 2)
+    const n = g.attributes.position.count
+    const col = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) { col[i * 3] = 0.85; col[i * 3 + 1] = 0.9; col[i * 3 + 2] = 0.95 }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    return g
+  }
+  if (kind === 'armor') {
+    const g = new THREE.BoxGeometry(0.34, 0.4, 0.08)
+    const n = g.attributes.position.count
+    const col = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) { col[i * 3] = 0.22; col[i * 3 + 1] = 0.26; col[i * 3 + 2] = 0.3 }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    return g
+  }
+  const merged = mergedWeaponGeometry(kind).clone()
+  merged.scale(2.2, 2.2, 2.2) // floor weapons read bigger than the viewmodel
+  return merged
+}
+
+interface KindPool {
+  mesh: THREE.InstancedMesh
+  outline: THREE.InstancedMesh
+  free: number[]
+}
+
 export class LootSystem {
   private scene: THREE.Scene
   private fx: Fx
   private floor = new Map<number, FloorLoot>()
   private crates = new Map<number, CrateInst>()
   private nextId = 1
-  private inst: THREE.InstancedMesh
-  private freeSlots: number[] = []
+  private pools: Record<VisualKind, KindPool>
+  private glows = new Map<number, THREE.Sprite>()
+  private glowTex: THREE.Texture
   private unsubs: (() => void)[] = []
   private mat4 = new THREE.Matrix4()
   private color = new THREE.Color()
+  private dark = false
+  private lootBeams = new Map<number, THREE.Mesh>()
+  private spinT = 0
 
   constructor(scene: THREE.Scene, fx: Fx) {
     this.scene = scene
     this.fx = fx
-    const geo = new THREE.OctahedronGeometry(0.34)
-    geo.translate(0, 0.55, 0)
-    this.inst = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial(), 1800)
-    this.inst.frustumCulled = false
-    for (let i = 0; i < 1800; i++) {
-      this.mat4.makeScale(0, 0, 0)
-      this.inst.setMatrixAt(i, this.mat4)
-      this.freeSlots.push(1800 - 1 - i)
+    this.glowTex = makeGlowTexture()
+    this.pools = {} as Record<VisualKind, KindPool>
+    for (const kind of KINDS) {
+      const geo = kindGeometry(kind)
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }), CAP[kind])
+      const outline = new THREE.InstancedMesh(
+        geo,
+        new THREE.MeshBasicMaterial({ side: THREE.BackSide, transparent: true, opacity: 0.85 }),
+        CAP[kind],
+      )
+      mesh.frustumCulled = false
+      outline.frustumCulled = false
+      const free: number[] = []
+      for (let i = 0; i < CAP[kind]; i++) {
+        this.mat4.makeScale(0, 0, 0)
+        mesh.setMatrixAt(i, this.mat4)
+        outline.setMatrixAt(i, this.mat4)
+        free.push(CAP[kind] - 1 - i)
+      }
+      scene.add(mesh, outline)
+      this.pools[kind] = { mesh, outline, free }
     }
-    scene.add(this.inst)
-
     this.unsubs.push(on('blackoutStart', () => this.setDark(true)))
     this.unsubs.push(on('blackoutEnd', () => this.setDark(false)))
   }
 
   dispose(): void {
     for (const u of this.unsubs) u()
+    this.crates.clear()
   }
 
   populate(world: WorldData, rng: Rng): void {
     for (const p of world.lootPoints) {
-      if (rng() < 0.68) {
-        // Better districts roll better weapons by nudging extra rolls.
+      const chance = p.buildingId ? 0.8 : 0.62
+      if (rng() < chance) {
         let item = rollGroundItem(rng)
         if (p.grade >= 2 && item.type === 'weapon' && rng() < (p.grade === 3 ? 0.5 : 0.25)) {
           const again = rollGroundItem(rng)
           if (again.type === 'weapon' && RARITY_RANK[again.rarity] > RARITY_RANK[item.rarity]) item = again
         }
-        this.spawnFloor(item, p.x, p.z)
+        this.spawnFloor(item, p.x, p.z, p.y, p.buildingId ?? null)
       }
     }
     for (const p of world.cratePoints) {
-      if (rng() < 0.78) this.spawnCrate(crateTierForGrade(rng, p.grade), p.x, p.z)
+      if (rng() < 0.78) this.spawnCrate(crateTierForGrade(rng, p.grade), p.x, p.z, false, p.y, p.buildingId ?? null)
     }
   }
 
-  private dark = false
-  private lootBeams = new Map<number, THREE.Mesh>()
-
   private setDark(dark: boolean): void {
     this.dark = dark
-    // Mil-Spec and better sends up a light column only the dark reveals —
-    // Blackouts are the aggressor's (and looter's) window.
     if (dark) {
       for (const f of this.floor.values()) this.maybeBeam(f)
     } else {
       for (const b of this.lootBeams.values()) this.fx.stopBeam(b)
       this.lootBeams.clear()
+    }
+    // Rarity glows are the Blackout's loot language: brighter in the dark.
+    for (const [id, s] of this.glows) {
+      const f = this.floor.get(id)
+      if (f) (s.material as THREE.SpriteMaterial).opacity = dark ? 0.9 : 0.45
     }
   }
 
@@ -138,24 +203,47 @@ export class LootSystem {
     if (beam) this.lootBeams.set(f.id, beam)
   }
 
-  spawnFloor(item: ItemKind, x: number, z: number, y?: number): FloorLoot | null {
-    const slot = this.freeSlots.pop()
+  private writeInstance(loot: FloorLoot, spin: number): void {
+    const pool = this.pools[loot.kind]
+    const lift = loot.item.type === 'weapon' ? 0.42 : 0.28
+    const bob = Math.sin(spin * 1.7 + loot.id) * 0.03
+    this.mat4.makeRotationY(spin + loot.id * 0.7)
+    if (loot.item.type === 'weapon') this.mat4.multiply(new THREE.Matrix4().makeRotationZ(0.35))
+    this.mat4.setPosition(loot.x, loot.y + lift + bob, loot.z)
+    pool.mesh.setMatrixAt(loot.slot, this.mat4)
+    const outlineM = this.mat4.clone().multiply(new THREE.Matrix4().makeScale(1.16, 1.16, 1.16))
+    pool.outline.setMatrixAt(loot.slot, outlineM)
+  }
+
+  spawnFloor(item: ItemKind, x: number, z: number, y?: number, buildingId: number | null = null): FloorLoot | null {
+    const kind = visualKind(item)
+    const pool = this.pools[kind]
+    const slot = pool.free.pop()
     if (slot === undefined) return null
     const { rarity } = itemLabel(item)
     const fy = y ?? Math.max(0.2, heightAt(x, z))
-    const loot: FloorLoot = { id: this.nextId++, item, x, y: fy, z, rarity, slot }
+    const loot: FloorLoot = { id: this.nextId++, item, x, y: fy, z, rarity, kind, slot, buildingId }
     this.floor.set(loot.id, loot)
-    this.mat4.makeRotationY((loot.id % 12) * 0.5)
-    this.mat4.setPosition(x, fy, z)
-    this.inst.setMatrixAt(slot, this.mat4)
-    this.inst.setColorAt(slot, this.color.set(RARITY_COLOR[rarity]))
-    this.inst.instanceMatrix.needsUpdate = true
-    if (this.inst.instanceColor) this.inst.instanceColor.needsUpdate = true
+    this.writeInstance(loot, this.spinT)
+    pool.outline.setColorAt(slot, this.color.set(RARITY_COLOR[rarity]))
+    pool.mesh.instanceMatrix.needsUpdate = true
+    pool.outline.instanceMatrix.needsUpdate = true
+    if (pool.outline.instanceColor) pool.outline.instanceColor.needsUpdate = true
+    // Rare and better: a soft glow sprite so the eye finds it across a room.
+    if (RARITY_RANK[rarity] >= RARITY_RANK.rare) {
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: this.glowTex, color: RARITY_COLOR[rarity], transparent: true, opacity: this.dark ? 0.9 : 0.45,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }))
+      sprite.position.set(x, fy + 0.45, z)
+      sprite.scale.setScalar(1.2 + RARITY_RANK[rarity] * 0.25)
+      this.scene.add(sprite)
+      this.glows.set(loot.id, sprite)
+    }
     this.maybeBeam(loot)
     return loot
   }
 
-  /** Read without taking — pickup logic decides first, takes second. */
   getFloor(id: number): FloorLoot | null {
     return this.floor.get(id) ?? null
   }
@@ -169,63 +257,58 @@ export class LootSystem {
       this.fx.stopBeam(beam)
       this.lootBeams.delete(id)
     }
+    const glow = this.glows.get(id)
+    if (glow) {
+      this.scene.remove(glow)
+      glow.material.dispose()
+      this.glows.delete(id)
+    }
+    const pool = this.pools[loot.kind]
     this.mat4.makeScale(0, 0, 0)
-    this.inst.setMatrixAt(loot.slot, this.mat4)
-    this.inst.instanceMatrix.needsUpdate = true
-    this.freeSlots.push(loot.slot)
+    pool.mesh.setMatrixAt(loot.slot, this.mat4)
+    pool.outline.setMatrixAt(loot.slot, this.mat4)
+    pool.mesh.instanceMatrix.needsUpdate = true
+    pool.outline.instanceMatrix.needsUpdate = true
+    pool.free.push(loot.slot)
     return loot.item
   }
 
-  spawnCrate(tier: CrateTier, x: number, z: number, falling = false): CrateInst {
-    const y = Math.max(0.2, heightAt(x, z))
+  spawnCrate(tier: CrateTier, x: number, z: number, falling = false, y?: number, buildingId: number | null = null): CrateInst {
+    const cy = y ?? Math.max(0.2, heightAt(x, z))
     const group = new THREE.Group()
     const c = RARITY_COLOR[TIER_RARITY[tier]]
-    const base = new THREE.Mesh(
-      new THREE.BoxGeometry(1.3, 0.7, 0.95),
-      new THREE.MeshLambertMaterial({ color: '#2e2c33' }),
-    )
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.7, 0.95), new THREE.MeshLambertMaterial({ color: '#2e2c33' }))
     base.position.y = 0.35
-    const trim = new THREE.Mesh(
-      new THREE.BoxGeometry(1.34, 0.09, 0.99),
-      new THREE.MeshBasicMaterial({ color: c }),
-    )
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.09, 0.99), new THREE.MeshBasicMaterial({ color: c }))
     trim.position.y = 0.72
-    const lid = new THREE.Mesh(
-      new THREE.BoxGeometry(1.3, 0.16, 0.95),
-      new THREE.MeshLambertMaterial({ color: '#3a3741' }),
-    )
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.16, 0.95), new THREE.MeshLambertMaterial({ color: '#3a3741' }))
     lid.geometry.translate(0, 0.08, 0.475)
     lid.position.set(0, 0.76, -0.475)
     group.add(base, trim, lid)
-    group.position.set(x, falling ? 300 : y, z)
+    group.position.set(x, falling ? 300 : cy, z)
     group.rotation.y = (x * 13 + z * 7) % Math.PI
     this.scene.add(group)
     const crate: CrateInst = {
-      id: this.nextId++, tier, x, y, z, state: 'closed', t: 0, group, lid,
-      beam: falling ? this.fx.beam(x, y, z, c, 1.2, 200, 0) : null,
-      falling,
-      pending: null,
+      id: this.nextId++, tier, x, y: cy, z, state: 'closed', t: 0, group, lid,
+      beam: falling ? this.fx.beam(x, cy, z, c, 1.2, 200, 0) : null,
+      falling, pending: null, buildingId,
     }
     this.crates.set(crate.id, crate)
     return crate
   }
 
-  /** The mid-match event everyone can see falling. */
   supplyDrop(x: number, z: number, tier: CrateTier): void {
     this.spawnCrate(tier, x, z, true)
     emit('supplyDrop', { x, z })
     audio.supplyDropFlare()
   }
 
-  /**
-   * Closest thing the player can interact with, favouring what they look at.
-   */
   nearestInteractable(pos: THREE.Vector3, maxDist = 2.8): { kind: 'floor' | 'crate'; id: number; label: string; color: string } | null {
     let best: { kind: 'floor' | 'crate'; id: number; label: string; color: string } | null = null
     let bestD = maxDist
     for (const f of this.floor.values()) {
       const d = Math.hypot(f.x - pos.x, f.z - pos.z)
-      if (d < bestD && Math.abs(f.y - pos.y) < 3.5) {
+      if (d < bestD && Math.abs(f.y + 0.4 - pos.y) < 2.6) {
         const { label, rarity } = itemLabel(f.item)
         best = { kind: 'floor', id: f.id, label, color: RARITY_COLOR[rarity] }
         bestD = d
@@ -234,7 +317,7 @@ export class LootSystem {
     for (const c of this.crates.values()) {
       if (c.state !== 'closed' || c.falling) continue
       const d = Math.hypot(c.x - pos.x, c.z - pos.z)
-      if (d < bestD && Math.abs(c.y - pos.y) < 3.5) {
+      if (d < bestD && Math.abs(c.y + 0.4 - pos.y) < 2.6) {
         best = { kind: 'crate', id: c.id, label: `${c.tier.toUpperCase()} CRATE`, color: RARITY_COLOR[TIER_RARITY[c.tier]] }
         bestD = d
       }
@@ -248,13 +331,10 @@ export class LootSystem {
     c.state = 'opening'
     c.t = 0
     audio.crateOpen(TIER_RARITY[c.tier])
-    // Contents roll now, spill when update() finishes the lid swing — which
-    // means opening respects pause and cannot outlive the match.
     c.pending = rollCrate(rng, c.tier)
     return true
   }
 
-  /** Bots crack crates too — same flow, same odds, same ceremony. */
   botOpenCrateNear(x: number, z: number, radius: number, rng: Rng): boolean {
     for (const c of this.crates.values()) {
       if (c.state !== 'closed' || c.falling) continue
@@ -263,7 +343,7 @@ export class LootSystem {
     return false
   }
 
-  /** Bots take a weapon only when it actually beats what they carry. */
+  /** Bots take a weapon only when it beats what they carry (0 = anything). */
   botTakeBestWeaponNear(x: number, z: number, radius: number, minPower: number): ItemKind | null {
     let best: FloorLoot | null = null
     let bestPower = minPower
@@ -282,8 +362,53 @@ export class LootSystem {
     return best ? this.takeFloor(best.id) : null
   }
 
-  /** Nearest closed crate for bot goal-seeking. */
-  nearestCrate(x: number, z: number, radius: number): { x: number; z: number } | null {
+  /** Bots also pocket consumables and armour lying around them. */
+  botTakeSuppliesNear(x: number, z: number, radius: number, wantArmor: boolean): ItemKind[] {
+    const got: ItemKind[] = []
+    for (const f of [...this.floor.values()]) {
+      if (f.item.type === 'weapon') continue
+      if (f.item.type === 'armor' && !wantArmor) continue
+      if (Math.hypot(f.x - x, f.z - z) > radius) continue
+      const it = this.takeFloor(f.id)
+      if (it) got.push(it)
+      if (got.length >= 2) break
+    }
+    return got
+  }
+
+  /** Nearest floor weapon for a bot goal; interiors count. */
+  nearestWeaponPoint(x: number, z: number, radius: number, minPower: number): { x: number; z: number; buildingId: number | null } | null {
+    let best: FloorLoot | null = null
+    let bestD = radius
+    for (const f of this.floor.values()) {
+      if (f.item.type !== 'weapon') continue
+      const def = WEAPON_BY_ID.get(f.item.weaponId)
+      if (!def || dps(def, f.item.rarity) <= minPower) continue
+      const d = Math.hypot(f.x - x, f.z - z)
+      if (d < bestD) {
+        best = f
+        bestD = d
+      }
+    }
+    return best ? { x: best.x, z: best.z, buildingId: best.buildingId } : null
+  }
+
+  /** QA hook: the nearest floor weapon with its resting height. */
+  debugNearestWeapon(x: number, z: number): { x: number; y: number; z: number; buildingId: number | null } | null {
+    let best: FloorLoot | null = null
+    let bestD = Infinity
+    for (const f of this.floor.values()) {
+      if (f.item.type !== 'weapon') continue
+      const d = Math.hypot(f.x - x, f.z - z)
+      if (d < bestD) {
+        best = f
+        bestD = d
+      }
+    }
+    return best ? { x: best.x, y: best.y, z: best.z, buildingId: best.buildingId } : null
+  }
+
+  nearestCrate(x: number, z: number, radius: number): { x: number; z: number; buildingId: number | null } | null {
     let best: CrateInst | null = null
     let bestD = radius
     for (const c of this.crates.values()) {
@@ -294,10 +419,28 @@ export class LootSystem {
         bestD = d
       }
     }
-    return best ? { x: best.x, z: best.z } : null
+    return best ? { x: best.x, z: best.z, buildingId: best.buildingId } : null
   }
 
-  update(dt: number): void {
+  update(dt: number, cameraPos: THREE.Vector3): void {
+    this.spinT += dt
+    // Slow spin + bob for items near the camera — the classic loot read.
+    const touched = new Set<VisualKind>()
+    for (const f of this.floor.values()) {
+      const dx = f.x - cameraPos.x
+      const dz = f.z - cameraPos.z
+      if (dx * dx + dz * dz > 70 * 70) continue
+      this.writeInstance(f, this.spinT)
+      touched.add(f.kind)
+    }
+    for (const k of touched) {
+      this.pools[k].mesh.instanceMatrix.needsUpdate = true
+      this.pools[k].outline.instanceMatrix.needsUpdate = true
+    }
+    for (const [id, s] of this.glows) {
+      const f = this.floor.get(id)
+      if (f) s.scale.setScalar((1.2 + RARITY_RANK[f.rarity] * 0.25) * (1 + Math.sin(this.spinT * 3 + id) * 0.12))
+    }
     for (const c of this.crates.values()) {
       if (c.falling) {
         c.group.position.y = Math.max(c.y, c.group.position.y - 42 * dt)
@@ -321,11 +464,25 @@ export class LootSystem {
           this.fx.beam(c.x, c.y, c.z, RARITY_COLOR[TIER_RARITY[c.tier]], 0.8, 40, 1.2)
           items.forEach((item, i) => {
             const ang = (i / items.length) * Math.PI * 2 + c.group.rotation.y
-            this.spawnFloor(item, c.x + Math.cos(ang) * 1.3, c.z + Math.sin(ang) * 1.3)
+            this.spawnFloor(item, c.x + Math.cos(ang) * 1.1, c.z + Math.sin(ang) * 1.1, c.y, c.buildingId)
           })
           emit('crateOpened', { tier: c.tier, x: c.x, z: c.z })
         }
       }
     }
   }
+}
+
+function makeGlowTexture(): THREE.Texture {
+  const c = document.createElement('canvas')
+  c.width = 64
+  c.height = 64
+  const g = c.getContext('2d')!
+  const grad = g.createRadialGradient(32, 32, 2, 32, 32, 32)
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)')
+  grad.addColorStop(0.4, 'rgba(255,255,255,0.35)')
+  grad.addColorStop(1, 'rgba(255,255,255,0)')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 64, 64)
+  return new THREE.CanvasTexture(c)
 }

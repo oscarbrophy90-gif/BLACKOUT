@@ -1,14 +1,18 @@
 import {
-  DEFAULT_OWNED, addMetrics, dailyChallenges, emptyMetrics, findCosmetic,
-  levelFromTotalXp, matchRewards, weeklyChallenges,
+  ACCESSORIES_BY_ID, CATALOG, CELEBRATIONS_BY_ID, EMOTES_BY_ID, STARTER_ITEMS, SUITS, WEAPON_SKINS_BY_ID,
+  addMetrics, dailyChallenges, emptyMetrics, levelFromTotalXp, matchRewards, priceOf, weeklyChallenges,
 } from '@blackout/shared'
-import type { ChallengeDef, MatchMetrics, MatchOutcome, MatchRewards } from '@blackout/shared'
+import type {
+  AccessoryItem, CatalogItem, CelebrationItem, ChallengeDef, EmoteItem, MatchMetrics, MatchOutcome,
+  MatchRewards, SuitDef, WeaponSkinItem,
+} from '@blackout/shared'
 
-// Persistent account data. localStorage today; the schema deliberately
-// mirrors docs/DATABASE.md so Phase 3 can lift it to the server unchanged.
-// The server will treat all of this as untrusted and recompute rewards.
+// Persistent account data. localStorage today; the schema mirrors
+// docs/DATABASE.md so Phase 3 lifts it to the server unchanged.
+// Cosmetics reference the 2,000-item catalogue by id.
 
-const KEY = 'blackout_save_v1'
+const KEY = 'blackout_save_v2'
+const LEGACY_KEY = 'blackout_save_v1'
 
 export interface Settings {
   volume: number
@@ -19,10 +23,12 @@ export interface Settings {
 }
 
 export interface Equipped {
-  weaponSkin: string
   suit: string
-  charm: string | null
+  celebration: string
   emote: string
+  weaponSkin: string
+  /** One accessory per slot, by catalogue id. */
+  accessories: string[]
 }
 
 export interface LifetimeStats {
@@ -54,9 +60,15 @@ function defaults(): SaveData {
   return {
     name: 'Linewalker',
     xp: 0,
-    coins: 150,
-    owned: [...DEFAULT_OWNED],
-    equipped: { weaponSkin: 'ws_issue', suit: 'su_contract', charm: null, emote: 'em_wave' },
+    coins: 600,
+    owned: [STARTER_ITEMS.celebration, STARTER_ITEMS.emote, STARTER_ITEMS.weaponSkin],
+    equipped: {
+      suit: SUITS[0].id,
+      celebration: STARTER_ITEMS.celebration,
+      emote: STARTER_ITEMS.emote,
+      weaponSkin: STARTER_ITEMS.weaponSkin,
+      accessories: [],
+    },
     stats: {
       matches: 0, wins: 0, kills: 0, top10s: 0, bestPlacement: 0, totalXp: 0,
       weaponKills: {}, blackoutKills: 0, cratesOpened: 0, distance: 0,
@@ -80,18 +92,28 @@ export class Profile {
   constructor() {
     this.data = defaults()
     try {
-      const raw = localStorage.getItem(KEY)
+      const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY)
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<SaveData>
+        const parsed = JSON.parse(raw) as Partial<SaveData> & { equipped?: Partial<Equipped> & { charm?: string } }
+        const d = defaults()
         this.data = {
-          ...defaults(),
+          ...d,
           ...parsed,
-          equipped: { ...defaults().equipped, ...parsed.equipped },
-          stats: { ...defaults().stats, ...parsed.stats },
-          settings: { ...defaults().settings, ...parsed.settings },
-          daily: { ...defaults().daily, ...parsed.daily },
-          weekly: { ...defaults().weekly, ...parsed.weekly },
+          equipped: { ...d.equipped, ...(parsed.equipped ?? {}) },
+          stats: { ...d.stats, ...parsed.stats },
+          settings: { ...d.settings, ...parsed.settings },
+          daily: { ...d.daily, ...parsed.daily },
+          weekly: { ...d.weekly, ...parsed.weekly },
         }
+        // Legacy saves referenced the old 36-item cosmetic set: keep what
+        // still resolves, fall back to starters for the rest.
+        this.data.owned = [...new Set([...d.owned, ...(parsed.owned ?? []).filter((id) => CATALOG.has(id))])]
+        const eq = this.data.equipped
+        if (!CELEBRATIONS_BY_ID.has(eq.celebration) || !this.owns(eq.celebration)) eq.celebration = STARTER_ITEMS.celebration
+        if (!EMOTES_BY_ID.has(eq.emote) || !this.owns(eq.emote)) eq.emote = STARTER_ITEMS.emote
+        if (!WEAPON_SKINS_BY_ID.has(eq.weaponSkin) || !this.owns(eq.weaponSkin)) eq.weaponSkin = STARTER_ITEMS.weaponSkin
+        if (!SUITS.some((s) => s.id === eq.suit)) eq.suit = SUITS[0].id
+        eq.accessories = (eq.accessories ?? []).filter((id) => ACCESSORIES_BY_ID.has(id) && this.owns(id))
       }
     } catch {
       // Corrupt or blocked storage: play with a fresh profile.
@@ -115,7 +137,6 @@ export class Profile {
     return Math.floor(this.dayKey() / 7)
   }
 
-  /** Reset challenge progress when the day/week window moves on. */
   private rollWindows(): void {
     const day = this.dayKey()
     const week = this.weekKey()
@@ -162,26 +183,91 @@ export class Profile {
     return this.data.equipped
   }
 
-  owns(id: string): boolean {
-    return this.data.owned.includes(id)
+  get ownedCount(): number {
+    return this.data.owned.length
   }
 
+  owns(id: string): boolean {
+    return this.data.owned.includes(id) || SUITS.some((s) => s.id === id)
+  }
+
+  /** QA hook only (main.ts `?debug`). */
+  debugSetCoins(n: number): void {
+    this.data.coins = Math.max(0, Math.floor(n))
+    this.save()
+  }
+
+  /** Buy a catalogue item with salvage. */
   buy(id: string): boolean {
-    const entry = findCosmetic(id)
-    if (!entry || this.owns(id) || this.data.coins < entry.price) return false
-    this.data.coins -= entry.price
+    const item = CATALOG.get(id)
+    if (!item || this.owns(id)) return false
+    const price = priceOf(item)
+    if (this.data.coins < price) return false
+    this.data.coins -= price
     this.data.owned.push(id)
     this.save()
     return true
   }
 
-  equip(kind: keyof Equipped, id: string | null): boolean {
-    if (id !== null && !this.owns(id)) return false
-    if (kind === 'charm') this.data.equipped.charm = id
-    else if (id === null) return false
-    else this.data.equipped[kind] = id
+  /** Equip any owned catalogue item; accessories replace the same slot. */
+  equip(id: string): boolean {
+    const item = CATALOG.get(id)
+    if (!item || !this.owns(id)) return false
+    const eq = this.data.equipped
+    switch (item.category) {
+      case 'celebration': eq.celebration = id; break
+      case 'emote': eq.emote = id; break
+      case 'weaponSkin': eq.weaponSkin = id; break
+      case 'accessory': {
+        const slot = item.acc.slot
+        eq.accessories = eq.accessories.filter((a) => ACCESSORIES_BY_ID.get(a)?.acc.slot !== slot)
+        eq.accessories.push(id)
+        break
+      }
+    }
     this.save()
     return true
+  }
+
+  unequipAccessory(id: string): void {
+    this.data.equipped.accessories = this.data.equipped.accessories.filter((a) => a !== id)
+    this.save()
+  }
+
+  equipSuit(id: string): void {
+    if (SUITS.some((s) => s.id === id)) {
+      this.data.equipped.suit = id
+      this.save()
+    }
+  }
+
+  isEquipped(id: string): boolean {
+    const eq = this.data.equipped
+    return eq.celebration === id || eq.emote === id || eq.weaponSkin === id || eq.accessories.includes(id) || eq.suit === id
+  }
+
+  celebration(): CelebrationItem {
+    return CELEBRATIONS_BY_ID.get(this.data.equipped.celebration) ?? CELEBRATIONS_BY_ID.get(STARTER_ITEMS.celebration)!
+  }
+
+  emote(): EmoteItem {
+    return EMOTES_BY_ID.get(this.data.equipped.emote) ?? EMOTES_BY_ID.get(STARTER_ITEMS.emote)!
+  }
+
+  weaponSkin(): WeaponSkinItem {
+    return WEAPON_SKINS_BY_ID.get(this.data.equipped.weaponSkin) ?? WEAPON_SKINS_BY_ID.get(STARTER_ITEMS.weaponSkin)!
+  }
+
+  accessories(): AccessoryItem[] {
+    return this.data.equipped.accessories.map((id) => ACCESSORIES_BY_ID.get(id)).filter((a): a is AccessoryItem => !!a)
+  }
+
+  suit(): SuitDef {
+    return SUITS.find((s) => s.id === this.data.equipped.suit) ?? SUITS[0]
+  }
+
+  ownedItems(): CatalogItem[] {
+    return this.data.owned.map((id) => CATALOG.get(id)).filter((i): i is CatalogItem => !!i)
   }
 
   favoriteWeapon(): string | null {
@@ -209,11 +295,6 @@ export class Profile {
     }
   }
 
-  /**
-   * Record a finished match: XP, coins, lifetime stats, challenge progress.
-   * Returns the reward screen payload, including challenges completed by
-   * this match's contribution.
-   */
   recordMatch(outcome: MatchOutcome, metrics: MatchMetrics, weaponKills: Record<string, number>): {
     rewards: MatchRewards
     completed: ChallengeDef[]
@@ -255,9 +336,7 @@ export class Profile {
     if (outcome.placement === 1) s.wins++
     if (outcome.placement <= 10) s.top10s++
     if (s.bestPlacement === 0 || outcome.placement < s.bestPlacement) s.bestPlacement = outcome.placement
-    for (const [id, k] of Object.entries(weaponKills)) {
-      s.weaponKills[id] = (s.weaponKills[id] ?? 0) + k
-    }
+    for (const [id, k] of Object.entries(weaponKills)) s.weaponKills[id] = (s.weaponKills[id] ?? 0) + k
 
     this.save()
     return { rewards, completed, level: this.level }

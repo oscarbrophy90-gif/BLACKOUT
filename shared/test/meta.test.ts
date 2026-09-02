@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { matchRewards, levelFromTotalXp, xpForNextLevel, placementXp } from '../src/xp.ts'
 import { dailyChallenges, weeklyChallenges, emptyMetrics, addMetrics } from '../src/challenges.ts'
-import { shopForDay, findCosmetic, DEFAULT_OWNED, WEAPON_SKINS, SUITS, CHARMS, EMOTES, PRICE_BY_RARITY } from '../src/cosmetics.ts'
+import { SUITS } from '../src/cosmetics.ts'
 import { makeCallsign } from '../src/names.ts'
 import { makeRng } from '../src/rng.ts'
 
@@ -51,24 +51,9 @@ test('metrics accumulate', () => {
   assert.equal(m2.distance, 500)
 })
 
-test('the shop rotates deterministically and never sells starters', () => {
-  const s1 = shopForDay(20000)
-  const s2 = shopForDay(20000)
-  const s3 = shopForDay(20001)
-  assert.deepEqual(s1, s2)
-  assert.notDeepEqual(s1.map((e) => e.id), s3.map((e) => e.id))
-  assert.equal(s1.length, 6)
-  for (const e of s1) {
-    assert.ok(!DEFAULT_OWNED.includes(e.id))
-    assert.equal(e.price, PRICE_BY_RARITY[e.rarity])
-  }
-  assert.ok(['legendary', 'mythic', 'exotic'].includes(s1[0].rarity))
-})
-
-test('cosmetic ids are unique across kinds and findable', () => {
-  const ids = [...WEAPON_SKINS, ...SUITS, ...CHARMS, ...EMOTES].map((c) => c.id)
+test('suit ids are unique', () => {
+  const ids = SUITS.map((c) => c.id)
   assert.equal(new Set(ids).size, ids.length)
-  for (const id of DEFAULT_OWNED) assert.ok(findCosmetic(id), id)
 })
 
 test('callsigns avoid collisions', () => {

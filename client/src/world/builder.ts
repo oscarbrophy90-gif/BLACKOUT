@@ -4,6 +4,8 @@ import { COLORS, ISLAND_RADIUS } from '../config.ts'
 import type { CollisionWorld } from './collision.ts'
 import { DISTRICTS, WORLD_SEED, heightAt } from './terrain.ts'
 import type { District } from './terrain.ts'
+import { makeBuilding, resetBuildings } from './buildings.ts'
+import type { BuildingStyle } from './buildings.ts'
 
 // Builds every structure on Vantera out of instanced primitives. One
 // InstancedMesh per primitive kind keeps the whole island at a handful of
@@ -13,6 +15,9 @@ export interface SpawnPoint {
   x: number
   z: number
   grade: 1 | 2 | 3
+  /** Floor height for interior points; undefined = terrain. */
+  y?: number
+  buildingId?: number
 }
 
 export interface WorldData {
@@ -34,15 +39,16 @@ interface BoxSpec {
   edges: boolean
 }
 
-const MAX_BOXES = 2600
+const MAX_BOXES = 14000
 const MAX_CYLS = 160
 const MAX_ROCKS = 300
-const MAX_SIGNS = 260
+const MAX_SIGNS = 400
 const MAX_TREES = 2200
 
 const SIGN_PALETTE = [COLORS.sodium, COLORS.cyan, '#ff7a3d', '#7d6bff', '#7fe08a']
 
 export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
+  resetBuildings()
   const rng = makeRng(deriveSeed(WORLD_SEED, 'structures'))
   const boxes: BoxSpec[] = []
   const signs: { x: number; y: number; z: number; w: number; h: number; d: number; color: string }[] = []
@@ -56,39 +62,38 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
     if (boxes.length < MAX_BOXES) boxes.push(s)
   }
 
-  /** A building sitting on the terrain, optionally raised on pillars. */
+  /**
+   * An enterable building from the kit: rooms, doors, windows, stairs,
+   * interior loot. `style` picks the layout; city towers keep a solid
+   * skyline mass above their two enterable floors.
+   */
   function building(
     x: number, z: number, w: number, h: number, d: number,
-    color: string, opts: { arcade?: boolean; signs?: number; edges?: boolean } = {},
+    color: string, opts: { style?: BuildingStyle; signs?: number; grade?: 1 | 2 | 3; floors?: 1 | 2 } = {},
   ): void {
-    const base = heightAt(x, z)
-    if (base < 0.5) return
-    if (opts.arcade) {
-      const lift = 3.4
-      box({ x, y: base + lift, z, w, h: h - lift, d, color, solid: true, edges: opts.edges ?? true })
-      for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-        box({
-          x: x + sx * (w / 2 - 0.5), y: base, z: z + sz * (d / 2 - 0.5),
-          w: 0.7, h: lift, d: 0.7, color, solid: true, edges: false,
-        })
-      }
-      lootPoints.push({ x, z, grade: 2 })
-    } else {
-      box({ x, y: base, z, w, h, d, color, solid: true, edges: opts.edges ?? true })
-    }
+    const style = opts.style ?? 'house'
+    const floors = opts.floors ?? (style === 'city' ? 2 : 1)
+    const usedH = floors * 3.42
+    const kit = makeBuilding({ x, z, w, d, style, color, floors, solidAbove: Math.max(0, h - usedH) }, rng, opts.grade ?? 1)
+    if (!kit) return
+    for (const b of kit.boxes) box(b)
+    for (const p of kit.lootPoints) lootPoints.push({ x: p.x, z: p.z, grade: p.grade, y: p.y, buildingId: p.buildingId })
+    for (const p of kit.cratePoints) cratePoints.push({ x: p.x, z: p.z, grade: p.grade, y: p.y, buildingId: p.buildingId })
+    for (const sg of kit.signs) if (signs.length < MAX_SIGNS) signs.push({ ...sg, color: SIGN_PALETTE[Math.floor(rng() * SIGN_PALETTE.length)] })
     const nSigns = opts.signs ?? 0
     for (let i = 0; i < nSigns && signs.length < MAX_SIGNS; i++) {
       const side = Math.floor(rng() * 4)
       const along = (rng() - 0.5) * (side < 2 ? w : d) * 0.7
-      const sy = base + 2.5 + rng() * Math.max(1, h - 4)
+      const base = kit.building.baseY
+      const sy = base + 2.4 + rng() * 0.6
       const c = SIGN_PALETTE[Math.floor(rng() * SIGN_PALETTE.length)]
       const sw = side < 2 ? 1.6 + rng() * 3 : 0.24
       const sd = side < 2 ? 0.24 : 1.6 + rng() * 3
       signs.push({
-        x: x + (side === 0 ? along : side === 1 ? along : side === 2 ? -w / 2 - 0.12 : w / 2 + 0.12),
+        x: x + (side === 0 ? along : side === 1 ? along : side === 2 ? -w / 2 - 0.14 : w / 2 + 0.14),
         y: sy,
-        z: side === 0 ? z - d / 2 - 0.12 : side === 1 ? z + d / 2 + 0.12 : z + along,
-        w: sw, h: 0.5 + rng() * 0.9, d: sd, color: c,
+        z: side === 0 ? z - d / 2 - 0.14 : side === 1 ? z + d / 2 + 0.14 : z + along,
+        w: sw, h: 0.5 + rng() * 0.6, d: sd, color: c,
       })
     }
   }
@@ -123,14 +128,13 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
             const h = 10 + rng() * 22
             const grey = 0.32 + rng() * 0.2
             const c = new THREE.Color(grey * 0.9, grey * 0.92, grey * 1.05)
-            building(x, z, 14 + rng() * 10, h, 14 + rng() * 10, `#${c.getHexString()}`, {
-              arcade: rng() < 0.3,
-              signs: 1 + Math.floor(rng() * 2),
+            building(x, z, 15 + rng() * 9, h, 15 + rng() * 9, `#${c.getHexString()}`, {
+              style: 'city', grade: 2, floors: 2, signs: 1 + Math.floor(rng() * 2),
             })
           }
         }
-        scatterPoints(d, 70, lootPoints, d.grade)
-        scatterPoints(d, 14, cratePoints, d.grade)
+        scatterPoints(d, 40, lootPoints, d.grade)
+        scatterPoints(d, 8, cratePoints, d.grade)
         break
       }
       case 'industrial': {
@@ -138,7 +142,7 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
           const ang = rng() * Math.PI * 2
           const rr = Math.sqrt(rng()) * d.r * 0.75
           building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr,
-            22 + rng() * 16, 9 + rng() * 5, 30 + rng() * 14, '#4a4238', { signs: 1 })
+            22 + rng() * 16, 8, 30 + rng() * 14, '#4a4238', { style: 'warehouse', grade: 2, signs: 1 })
         }
         // Capacitor stacks — the island's Blackout clock arcs here.
         for (let i = 0; i < 8 && cyls.length < MAX_CYLS; i++) {
@@ -165,7 +169,7 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
           const ang = rng() * Math.PI * 2
           const rr = rng() * d.r * 0.7
           building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr,
-            7 + rng() * 3, 4, 8 + rng() * 3, '#4f4335', { signs: rng() < 0.4 ? 1 : 0 })
+            7.5 + rng() * 3, 3.5, 8 + rng() * 3, '#4f4335', { style: 'cabin', grade: 1, signs: rng() < 0.4 ? 1 : 0 })
         }
         scatterPoints(d, 45, lootPoints, d.grade)
         scatterPoints(d, 8, cratePoints, d.grade)
@@ -177,10 +181,11 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
           const rr = d.r * (0.35 + rng() * 0.45)
           const x = d.cx + Math.cos(ang) * rr
           const z = d.cz + Math.sin(ang) * rr
-          building(x, z, 6, 14, 6, '#57505a', { signs: 1 })
+          box({ x, y: heightAt(x, z), z, w: 6, h: 14, d: 6, color: '#57505a', solid: true, edges: true })
+          signs.push({ x, y: heightAt(x, z) + 13, z: z - 3.1, w: 2, h: 0.5, d: 0.2, color: COLORS.sodium })
         }
         // Summit relay.
-        building(d.cx, d.cz, 12, 8, 12, '#5c5560', { signs: 2 })
+        building(d.cx, d.cz, 12, 6, 12, '#5c5560', { style: 'bunker', grade: 1, signs: 2 })
         for (let i = 0; i < 60 && rocks.length < MAX_ROCKS; i++) {
           const ang = rng() * Math.PI * 2
           const rr = Math.sqrt(rng()) * d.r
@@ -207,7 +212,7 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
             })
           }
         }
-        building(d.cx + 60, d.cz + 40, 26, 10, 36, '#44484f', { signs: 2 })
+        building(d.cx + 60, d.cz + 40, 26, 8, 36, '#44484f', { style: 'warehouse', grade: 2, signs: 2 })
         // Piers reaching into black water: march each one to the actual
         // shoreline instead of guessing where the sea is.
         for (let i = 0; i < 3; i++) {
@@ -243,37 +248,31 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
           }
         }
         for (let i = 0; i < 3; i++) {
-          building(d.cx - 60 + i * 60, d.cz - 30, 24, 11, 30, '#41463d', { edges: true })
+          building(d.cx - 60 + i * 60, d.cz - 30, 24, 10, 30, '#41463d', { style: 'hangar', grade: 3 })
         }
         for (let i = 0; i < 6; i++) {
           const ang = rng() * Math.PI * 2
           const rr = rng() * d.r * 0.55
-          building(d.cx + Math.cos(ang) * rr, d.cz + 25 + Math.sin(ang) * rr * 0.5, 9, 5, 9, '#373b34')
+          building(d.cx + Math.cos(ang) * rr, d.cz + 25 + Math.sin(ang) * rr * 0.5, 9.5, 3.5, 9.5, '#373b34', { style: 'bunker', grade: 3 })
         }
-        building(d.cx, d.cz + 60, 8, 22, 8, '#454a41', { signs: 2 })
+        building(d.cx, d.cz + 60, 10, 22, 10, '#454a41', { style: 'city', grade: 3, floors: 2, signs: 2 })
         scatterPoints(d, 60, lootPoints, d.grade)
         scatterPoints(d, 16, cratePoints, d.grade)
         break
       }
       case 'suburb': {
-        for (let i = 0; i < 38; i++) {
+        for (let i = 0; i < 30; i++) {
           const ang = rng() * Math.PI * 2
           const rr = Math.sqrt(rng()) * d.r * 0.9
           const x = d.cx + Math.cos(ang) * rr
           const z = d.cz + Math.sin(ang) * rr
-          const base = heightAt(x, z)
-          if (base < -0.5) continue
-          // Half the town is sunk to the eaves.
-          const sink = rng() < 0.5 ? 2.2 : 0
+          if (heightAt(x, z) < 0.6) continue
           const grey = 0.3 + rng() * 0.18
           const c = new THREE.Color(grey, grey * 0.95, grey * 0.9)
-          box({
-            x, y: base - sink, z, w: 6 + rng() * 3, h: 4.5, d: 7 + rng() * 3,
-            color: `#${c.getHexString()}`, solid: true, edges: true,
-          })
+          building(x, z, 7 + rng() * 3, 3.6, 8 + rng() * 3, `#${c.getHexString()}`, { style: 'house', grade: 1 })
         }
-        scatterPoints(d, 40, lootPoints, d.grade)
-        scatterPoints(d, 8, cratePoints, d.grade)
+        scatterPoints(d, 30, lootPoints, d.grade)
+        scatterPoints(d, 6, cratePoints, d.grade)
         break
       }
       case 'mine': {
@@ -289,7 +288,7 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
         for (let i = 0; i < 5; i++) {
           const ang = rng() * Math.PI * 2
           const rr = rng() * d.r * 0.6
-          building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr, 10, 6, 14, '#4c463c', { signs: 1 })
+          building(d.cx + Math.cos(ang) * rr, d.cz + Math.sin(ang) * rr, 10, 3.5, 14, '#4c463c', { style: 'shed', grade: 2, signs: 1 })
         }
         scatterPoints(d, 50, lootPoints, d.grade)
         scatterPoints(d, 11, cratePoints, d.grade)
