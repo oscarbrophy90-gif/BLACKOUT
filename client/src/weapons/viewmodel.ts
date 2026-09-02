@@ -140,7 +140,7 @@ export class Viewmodel {
     )
     if (this.magMesh) {
       const out = reloadF > 0.55 ? (reloadF - 0.55) / 0.45 : 0
-      this.magMesh.position.y = -0.1 - out * 0.2
+      this.magMesh.position.y = -out * 0.2
       this.magMesh.visible = out < 0.9
     }
     this.skinUpdate?.(time)

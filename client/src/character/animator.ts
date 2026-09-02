@@ -19,7 +19,11 @@ export class CharacterAnimator {
   private spec: AnimSpec | null = null
   private time = 0
   private total = 0
+  /** One factor per live time effect; the clock runs at their product. */
+  private timeScales = new Map<string, number>()
   private timeScale = 1
+  /** Unscaled seconds since play(): the safety net that finishes a one-shot no matter what time effects do. */
+  private elapsed = 0
   private pose: Pose = clonePose(REST)
   private props: BuiltProp[] = []
   private accessories: BuiltAccessory[] = []
@@ -51,16 +55,20 @@ export class CharacterAnimator {
     this.spec = spec
     this.loop = opts.loop ?? spec.loop
     this.time = 0
+    this.elapsed = 0
     this.finished = false
+    this.timeScales.clear()
     this.timeScale = 1
     this.total = spec.moves.reduce((s, m) => s + MOVE_DEFS[m].duration, 0) / spec.tempo
-    // Props.
+    // Props. Floor-standing props (chairs, thrones, crates…) live in the
+    // holder, not the rig root, so sitting or spinning never drags them along;
+    // a 'throne' effect already brings its own seat.
     for (const id of spec.props) {
+      if (id === 'throne' && spec.effects.includes('throne')) continue
       const p = buildProp(id, spec.palette)
       if (!p) continue
       this.props.push(p)
-      if (p.socket === 'float') this.scene.add(p.obj)
-      else if (p.socket === 'feet') { this.rig.root.add(p.obj) }
+      if (p.socket === 'float' || p.socket === 'feet') this.scene.add(p.obj)
       else this.rig.sockets[p.socket].add(p.obj)
     }
     if (opts.withEffects !== false) {
@@ -68,7 +76,12 @@ export class CharacterAnimator {
         scene: this.scene,
         rig: this.rig,
         currentPose: () => this.pose,
-        setTimeScale: (s) => { this.timeScale = s },
+        setTimeScale: (key, s) => {
+          this.timeScales.set(key, s)
+          let k = 1
+          for (const v of this.timeScales.values()) k *= v
+          this.timeScale = k
+        },
         setVisible: (v) => { this.rig.root.visible = v },
         palette: spec.palette,
       })
@@ -77,7 +90,10 @@ export class CharacterAnimator {
   }
 
   stop(): void {
-    for (const p of this.props) p.obj.parent?.remove(p.obj)
+    for (const p of this.props) {
+      p.obj.parent?.remove(p.obj)
+      disposeTree(p.obj)
+    }
     this.props = []
     this.effects?.dispose()
     this.effects = null
@@ -89,7 +105,11 @@ export class CharacterAnimator {
   }
 
   setAccessories(specs: AccSpec[]): void {
-    for (const a of this.accessories) a.obj.parent?.remove(a.obj)
+    for (const a of this.accessories) {
+      a.obj.parent?.remove(a.obj)
+      a.emitter?.dispose()
+      disposeTree(a.obj)
+    }
     this.accessories = []
     for (const s of specs) {
       const built = buildAccessory(s)
@@ -131,9 +151,12 @@ export class CharacterAnimator {
       this.sample_idle(this.wallT)
       return
     }
+    this.elapsed += dt
     this.time += dt * this.timeScale
     if (this.time < 0) this.time = 0
-    if (this.time >= this.total) {
+    // A one-shot always ends: by its clock, or after 2.5x its length of
+    // wall time if freezes and rewinds have been holding it back.
+    if (this.time >= this.total || (!this.loop && this.elapsed > this.total * 2.5 + 1)) {
       if (this.loop) this.time = this.time % this.total
       else {
         this.time = this.total
@@ -160,7 +183,22 @@ export class CharacterAnimator {
 
   dispose(): void {
     this.stop()
-    for (const a of this.accessories) { a.obj.parent?.remove(a.obj); a.emitter?.dispose() }
+    for (const a of this.accessories) {
+      a.obj.parent?.remove(a.obj)
+      a.emitter?.dispose()
+      disposeTree(a.obj)
+    }
     this.accessories = []
   }
+}
+
+/** Free the GPU side of a detached prop/accessory subtree. */
+function disposeTree(obj: THREE.Object3D): void {
+  obj.traverse((o) => {
+    const m = o as THREE.Mesh
+    if (m.geometry) m.geometry.dispose()
+    const mat = m.material as THREE.Material | THREE.Material[] | undefined
+    if (Array.isArray(mat)) mat.forEach((x) => x.dispose())
+    else if (mat) mat.dispose()
+  })
 }

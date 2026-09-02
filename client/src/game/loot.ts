@@ -125,6 +125,10 @@ export class LootSystem {
   private glowTex: THREE.Texture
   private unsubs: (() => void)[] = []
   private mat4 = new THREE.Matrix4()
+  private mat4b = new THREE.Matrix4()
+  private readonly rotZ = new THREE.Matrix4().makeRotationZ(0.35)
+  private readonly outlineScale = new THREE.Matrix4().makeScale(1.16, 1.16, 1.16)
+  private touched = new Set<VisualKind>()
   private color = new THREE.Color()
   private dark = false
   private lootBeams = new Map<number, THREE.Mesh>()
@@ -207,12 +211,18 @@ export class LootSystem {
     const pool = this.pools[loot.kind]
     const lift = loot.item.type === 'weapon' ? 0.42 : 0.28
     const bob = Math.sin(spin * 1.7 + loot.id) * 0.03
+    // Scratch matrices only: this runs for every nearby item every frame.
     this.mat4.makeRotationY(spin + loot.id * 0.7)
-    if (loot.item.type === 'weapon') this.mat4.multiply(new THREE.Matrix4().makeRotationZ(0.35))
+    if (loot.item.type === 'weapon') this.mat4.multiply(this.rotZ)
     this.mat4.setPosition(loot.x, loot.y + lift + bob, loot.z)
     pool.mesh.setMatrixAt(loot.slot, this.mat4)
-    const outlineM = this.mat4.clone().multiply(new THREE.Matrix4().makeScale(1.16, 1.16, 1.16))
-    pool.outline.setMatrixAt(loot.slot, outlineM)
+    this.mat4b.copy(this.mat4).multiply(this.outlineScale)
+    pool.outline.setMatrixAt(loot.slot, this.mat4b)
+  }
+
+  /** Bots only ever reach the level they stand on (they do not climb stairs). */
+  private static sameLevel(fy: number, y: number): boolean {
+    return Math.abs(fy - y) < 1.5
   }
 
   spawnFloor(item: ItemKind, x: number, z: number, y?: number, buildingId: number | null = null): FloorLoot | null {
@@ -335,20 +345,22 @@ export class LootSystem {
     return true
   }
 
-  botOpenCrateNear(x: number, z: number, radius: number, rng: Rng): boolean {
+  botOpenCrateNear(x: number, y: number, z: number, radius: number, rng: Rng): boolean {
     for (const c of this.crates.values()) {
       if (c.state !== 'closed' || c.falling) continue
+      if (!LootSystem.sameLevel(c.y, y)) continue
       if (Math.hypot(c.x - x, c.z - z) <= radius) return this.openCrate(c.id, rng)
     }
     return false
   }
 
   /** Bots take a weapon only when it beats what they carry (0 = anything). */
-  botTakeBestWeaponNear(x: number, z: number, radius: number, minPower: number): ItemKind | null {
+  botTakeBestWeaponNear(x: number, y: number, z: number, radius: number, minPower: number): ItemKind | null {
     let best: FloorLoot | null = null
     let bestPower = minPower
     for (const f of this.floor.values()) {
       if (f.item.type !== 'weapon') continue
+      if (!LootSystem.sameLevel(f.y, y)) continue
       const d = Math.hypot(f.x - x, f.z - z)
       if (d > radius) continue
       const def = WEAPON_BY_ID.get(f.item.weaponId)
@@ -363,11 +375,12 @@ export class LootSystem {
   }
 
   /** Bots also pocket consumables and armour lying around them. */
-  botTakeSuppliesNear(x: number, z: number, radius: number, wantArmor: boolean): ItemKind[] {
+  botTakeSuppliesNear(x: number, y: number, z: number, radius: number, wantArmor: boolean): ItemKind[] {
     const got: ItemKind[] = []
     for (const f of [...this.floor.values()]) {
       if (f.item.type === 'weapon') continue
       if (f.item.type === 'armor' && !wantArmor) continue
+      if (!LootSystem.sameLevel(f.y, y)) continue
       if (Math.hypot(f.x - x, f.z - z) > radius) continue
       const it = this.takeFloor(f.id)
       if (it) got.push(it)
@@ -376,12 +389,13 @@ export class LootSystem {
     return got
   }
 
-  /** Nearest floor weapon for a bot goal; interiors count. */
-  nearestWeaponPoint(x: number, z: number, radius: number, minPower: number): { x: number; z: number; buildingId: number | null } | null {
+  /** Nearest floor weapon for a bot goal; interiors count, but only this level and never a blacklisted id. */
+  nearestWeaponPoint(x: number, y: number, z: number, radius: number, minPower: number, exclude?: ReadonlySet<number>): { id: number; x: number; z: number; buildingId: number | null } | null {
     let best: FloorLoot | null = null
     let bestD = radius
     for (const f of this.floor.values()) {
       if (f.item.type !== 'weapon') continue
+      if (!LootSystem.sameLevel(f.y, y) || exclude?.has(f.id)) continue
       const def = WEAPON_BY_ID.get(f.item.weaponId)
       if (!def || dps(def, f.item.rarity) <= minPower) continue
       const d = Math.hypot(f.x - x, f.z - z)
@@ -390,7 +404,7 @@ export class LootSystem {
         bestD = d
       }
     }
-    return best ? { x: best.x, z: best.z, buildingId: best.buildingId } : null
+    return best ? { id: best.id, x: best.x, z: best.z, buildingId: best.buildingId } : null
   }
 
   /** QA hook: the nearest floor weapon with its resting height. */
@@ -408,24 +422,26 @@ export class LootSystem {
     return best ? { x: best.x, y: best.y, z: best.z, buildingId: best.buildingId } : null
   }
 
-  nearestCrate(x: number, z: number, radius: number): { x: number; z: number; buildingId: number | null } | null {
+  nearestCrate(x: number, y: number, z: number, radius: number, exclude?: ReadonlySet<number>): { id: number; x: number; z: number; buildingId: number | null } | null {
     let best: CrateInst | null = null
     let bestD = radius
     for (const c of this.crates.values()) {
       if (c.state !== 'closed' || c.falling) continue
+      if (!LootSystem.sameLevel(c.y, y) || exclude?.has(c.id)) continue
       const d = Math.hypot(c.x - x, c.z - z)
       if (d < bestD) {
         best = c
         bestD = d
       }
     }
-    return best ? { x: best.x, z: best.z, buildingId: best.buildingId } : null
+    return best ? { id: best.id, x: best.x, z: best.z, buildingId: best.buildingId } : null
   }
 
   update(dt: number, cameraPos: THREE.Vector3): void {
     this.spinT += dt
     // Slow spin + bob for items near the camera — the classic loot read.
-    const touched = new Set<VisualKind>()
+    const touched = this.touched
+    touched.clear()
     for (const f of this.floor.values()) {
       const dx = f.x - cameraPos.x
       const dz = f.z - cameraPos.z

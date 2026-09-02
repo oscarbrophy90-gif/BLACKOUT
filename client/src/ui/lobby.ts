@@ -1,6 +1,7 @@
 import { WEAPON_BY_ID } from '@blackout/shared'
 import { audio } from '../core/audio.ts'
 import type { Profile } from '../meta/data.ts'
+import { esc } from './cards.ts'
 import { LoadoutPanel } from './loadout.ts'
 import { Preview3D } from './preview.ts'
 import { ShopPanel } from './shop.ts'
@@ -62,7 +63,7 @@ export class Lobby {
     return `
       <div class="char-preview">
         <div class="preview-host depot-preview"></div>
-        <div class="char-name">${this.profile.name}</div>
+        <div class="char-name">${esc(this.profile.name)}</div>
         <div class="char-suit">${suit.name}${worn.length ? ` · ${worn.map((a) => a.name).join(', ')}` : ''}</div>
         <div class="char-suit">Celebration: ${this.profile.celebration().name} · Emote: ${this.profile.emote().name}</div>
       </div>`
@@ -165,7 +166,7 @@ export class Lobby {
       ${this.header()}
       <div class="panel">
         <div class="panel-head"><button class="btn ghost back-btn">← DEPOT</button><h2>PROFILE</h2></div>
-        <label class="name-edit">Callsign <input maxlength="20" class="name-input" value="${this.profile.name}"></label>
+        <label class="name-edit">Callsign <input maxlength="20" class="name-input" value="${esc(this.profile.name)}"></label>
         <div class="stat-grid">
           <div class="stat"><b>${s.matches}</b>contracts</div>
           <div class="stat"><b>${s.wins}</b>wins</div>

@@ -28,6 +28,10 @@ export class ShopPanel {
   private timer = 0
   private refreshing = false
   private grid: HTMLElement | null = null
+  private holdTimer = 0
+  private pendingKey = 0
+  /** True while the panel is on screen; timers never render into a hidden depot. */
+  private active = false
 
   constructor(root: HTMLElement, profile: Profile, preview: Preview3D, onBack: () => void, coinsHtml: () => string) {
     this.root = root
@@ -43,6 +47,15 @@ export class ShopPanel {
 
   /** Full render: header, tabs, grid, side panel. */
   render(): void {
+    this.active = true
+    // Opened after a boundary (a match ran through one): deal the current
+    // rotation straight away instead of replaying the refresh hold.
+    const nowKey = rotationKey(Date.now())
+    if (nowKey !== this.key && !this.refreshing) {
+      this.key = nowKey
+      this.rotation = shopRotation(nowKey)
+      this.selected = null
+    }
     const luck: string[] = []
     if (this.rotation.exoticIn) luck.push(`<span class="luck exotic">EXOTIC DROP · ${CATEGORY_LABEL[this.rotation.exoticIn].toUpperCase()}</span>`)
     if (this.rotation.mythicIn) luck.push(`<span class="luck mythic">MYTHIC DROP · ${CATEGORY_LABEL[this.rotation.mythicIn].toUpperCase()}</span>`)
@@ -124,7 +137,9 @@ export class ShopPanel {
     }
     if (animate) {
       g.classList.add('leave')
-      window.setTimeout(draw, 160)
+      window.setTimeout(() => {
+        if (this.active && this.grid === g) draw()
+      }, 160)
     } else draw()
   }
 
@@ -196,6 +211,7 @@ export class ShopPanel {
       }),
     )
     d.querySelector('.buy-btn')?.addEventListener('click', () => {
+      if (this.refreshing) return
       const card = this.grid?.querySelector(`.item-card[data-id="${it.id}"]`) as HTMLElement | null
       this.buy(it, card)
     })
@@ -209,6 +225,8 @@ export class ShopPanel {
   }
 
   private buy(it: CatalogItem, card: HTMLElement | null): void {
+    // The rotation is rolling over: nothing on screen is for sale right now.
+    if (this.refreshing) return
     if (this.profile.buy(it.id)) {
       audio.ui('buy')
       // Purchase flourish: the card pops and stamps OWNED, the salvage chip drops.
@@ -229,7 +247,9 @@ export class ShopPanel {
       // Auto-equip the first of a kind so the purchase is felt immediately.
       if (it.category !== 'accessory' || this.profile.accessories().every((a) => a.acc.slot !== it.acc.slot)) this.profile.equip(it.id)
       this.renderDetail()
-      window.setTimeout(() => this.renderGrid(false), 650)
+      window.setTimeout(() => {
+        if (this.active) this.renderGrid(false)
+      }, 650)
     } else {
       audio.ui('deny')
       if (card) {
@@ -271,21 +291,39 @@ export class ShopPanel {
   /** The clock hit zero: hold on "REFRESHING SHOP..." then deal a brand-new selection. */
   private refresh(key: number): void {
     this.refreshing = true
+    this.pendingKey = key
     audio.refresh()
     this.root.querySelector('.shop-refreshing')?.classList.add('show')
     const timerEl = this.root.querySelector('.shop-timer') as HTMLElement | null
     if (timerEl) timerEl.innerHTML = '<b class="shop-clock refreshing">REFRESHING SHOP...</b>'
     this.grid?.classList.add('leave')
-    window.setTimeout(() => {
-      this.key = key
-      this.rotation = shopRotation(key)
-      this.selected = null
-      this.refreshing = false
-      this.render()
+    this.holdTimer = window.setTimeout(() => {
+      this.holdTimer = 0
+      this.commitRotation()
+      if (this.active) this.render()
     }, REFRESH_HOLD_MS)
   }
 
+  /** Apply the rotation the clock rolled onto, whether or not the hold played out on screen. */
+  private commitRotation(): void {
+    if (this.pendingKey) {
+      this.key = this.pendingKey
+      this.rotation = shopRotation(this.pendingKey)
+      this.selected = null
+      this.pendingKey = 0
+    }
+    this.refreshing = false
+  }
+
+  /** Leaving the panel: stop every timer so nothing renders into a hidden depot. */
   dispose(): void {
+    this.active = false
     this.stopClock()
+    if (this.holdTimer) {
+      window.clearTimeout(this.holdTimer)
+      this.holdTimer = 0
+      this.commitRotation()
+    }
+    this.grid = null
   }
 }

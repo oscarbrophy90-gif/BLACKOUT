@@ -12,8 +12,8 @@ export interface EffectHost {
   scene: THREE.Object3D
   rig: CharacterRig
   currentPose(): Pose
-  /** Playback controls for time effects. */
-  setTimeScale(s: number): void
+  /** Playback controls for time effects; keyed so two effects compose instead of fighting. */
+  setTimeScale(key: string, s: number): void
   setVisible(v: boolean): void
   palette: [string, string]
 }
@@ -275,12 +275,14 @@ export class CharacterEffects {
         return {
           update: (t, dt) => {
             phase += dt
-            const rewinding = (phase % 3.2) > 2.2
-            this.host.setTimeScale(rewinding ? -2.2 : 1)
+            // 2.2 s forward, then 0.5 s scrubbed back at 1.6x: the loop nets
+            // forward so the move still finishes.
+            const rewinding = (phase % 2.7) > 2.2
+            this.host.setTimeScale('rewind', rewinding ? -1.6 : 1)
             tintClone.rig.root.visible = rewinding
             tintClone.live.update(t, dt)
           },
-          dispose: () => { this.host.setTimeScale(1); tintClone.live.dispose() },
+          dispose: () => { this.host.setTimeScale('rewind', 1); tintClone.live.dispose() },
         }
       }
       case 'vanish': {
@@ -445,8 +447,8 @@ export class CharacterEffects {
         const shards = new Emitter({ count: 80, color: ['#bfe9ff', '#ffffff'], size: 0.1, life: 5, shape: 'sphere', radius: 2.4, height: 1.3, speed: [0, 0.02], dir: 'random', gravity: 0, rate: 0, sprite: 'square' })
         this.host.scene.add(shards.points)
         return {
-          update: (_t, dt) => { phase += dt; const frozen = (phase % 3) > 1.6; this.host.setTimeScale(frozen ? 0 : 1); shards.points.visible = frozen; shards.update(dt) },
-          dispose: () => { this.host.setTimeScale(1); this.host.scene.remove(shards.points); shards.dispose() },
+          update: (_t, dt) => { phase += dt; const frozen = (phase % 3) > 2.2; this.host.setTimeScale('timefreeze', frozen ? 0 : 1); shards.points.visible = frozen; shards.update(dt) },
+          dispose: () => { this.host.setTimeScale('timefreeze', 1); this.host.scene.remove(shards.points); shards.dispose() },
         }
       }
       case 'mirrorworld': {

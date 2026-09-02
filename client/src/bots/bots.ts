@@ -60,6 +60,15 @@ export interface Bot {
   path: Waypoint[]
   goalBuilding: number | null
   visited: Set<number>
+  /** Loot/crate ids this bot could not reach (stall blacklist) and what it walks to now. */
+  failedLoot: Set<number>
+  failedCrates: Set<number>
+  goalLootId: number | null
+  goalCrateId: number | null
+  /** Rooms searched in the current building. */
+  seenRooms: number
+  /** Seconds without a target while engaged — hysteresis before giving up the chase. */
+  lostT: number
   targetId: string | null
   losOk: boolean
   losT: number
@@ -175,6 +184,12 @@ export class BotManager implements TargetField {
         decideT: this.rng(),
         fleeT: 0,
         meleeT: 0,
+        failedLoot: new Set(),
+        failedCrates: new Set(),
+        goalLootId: null,
+        goalCrateId: null,
+        seenRooms: 0,
+        lostT: 0,
         fight: null,
         alive: true,
         suitIndex: Math.floor(this.rng() * SUITS.length),
@@ -286,15 +301,23 @@ export class BotManager implements TargetField {
     for (const b of this.bots.values()) {
       if (!b.alive) continue
       const dps_ = this.zone.dpsAt(b.pos.x, b.pos.z)
-      if (dps_ > 0) {
-        b.vitals.health -= dps_
-        if (b.vitals.health <= 0) this.kill(b, 'deadgrid', null, false)
-        else if (b.embodied || this.rng() < 0.6) {
-          b.state = 'rotate'
-          b.path = [{ ...this.pointInZone(), kind: 'point' }]
-          b.goalBuilding = null
-        }
+      if (dps_ <= 0) continue
+      b.vitals.health -= dps_
+      if (b.vitals.health <= 0) {
+        this.kill(b, 'deadgrid', null, false)
+        continue
       }
+      if (!(b.embodied || this.rng() < 0.6)) continue
+      // Already heading somewhere safe: keep the plan (and its exit doors).
+      const last = b.path.length ? b.path[b.path.length - 1] : null
+      if (last && this.zone.dpsAt(last.x, last.z) === 0) continue
+      const p = this.pointInZone()
+      if (b.embodied) this.pathTo(b, p.x, p.z, null, 'point')
+      else {
+        b.path = [{ ...p, kind: 'point' }]
+        b.goalBuilding = null
+      }
+      if (b.state !== 'engage') b.state = 'rotate'
     }
   }
 
@@ -440,17 +463,22 @@ export class BotManager implements TargetField {
   /** Pick the next thing to do when the hands are free. */
   private chooseLootGoal(b: Bot): void {
     const minPower = b.gear ? b.gear.power : 0
-    // A visible upgrade nearby beats everything.
-    const wp = this.loot.nearestWeaponPoint(b.pos.x, b.pos.z, b.gear ? 60 : 140, minPower)
-    const crate = this.loot.nearestCrate(b.pos.x, b.pos.z, b.gear ? 70 : 120)
+    b.goalLootId = null
+    b.goalCrateId = null
+    // A visible upgrade nearby beats everything — on this floor, and never
+    // one we already failed to reach.
+    const wp = this.loot.nearestWeaponPoint(b.pos.x, b.pos.y, b.pos.z, b.gear ? 60 : 140, minPower, b.failedLoot)
+    const crate = this.loot.nearestCrate(b.pos.x, b.pos.y, b.pos.z, b.gear ? 70 : 120, b.failedCrates)
     const pickCrate = crate && (!wp || (this.rng() < 0.45 && Math.hypot(crate.x - b.pos.x, crate.z - b.pos.z) < Math.hypot(wp.x - b.pos.x, wp.z - b.pos.z) * 1.3))
     if (pickCrate && crate) {
       this.pathTo(b, crate.x, crate.z, crate.buildingId, 'loot')
+      b.goalCrateId = crate.id
       b.state = 'loot'
       return
     }
     if (wp) {
       this.pathTo(b, wp.x, wp.z, wp.buildingId, 'loot')
+      b.goalLootId = wp.id
       b.state = 'loot'
       return
     }
@@ -473,18 +501,20 @@ export class BotManager implements TargetField {
       b.state = 'search'
       return
     }
-    b.path = [{ ...this.pointInZone(), kind: 'point' }]
-    b.goalBuilding = null
+    const p = this.pointInZone()
+    this.pathTo(b, p.x, p.z, null, 'point')
     b.state = this.rng() < 0.4 ? 'wander' : 'rotate'
   }
 
   /** On arrival at a loot/room waypoint: take what is useful here. */
   private lootHere(b: Bot): void {
-    if (this.loot.botOpenCrateNear(b.pos.x, b.pos.z, 4, this.rng)) {
+    b.goalLootId = null
+    b.goalCrateId = null
+    if (this.loot.botOpenCrateNear(b.pos.x, b.pos.y, b.pos.z, 4, this.rng)) {
       b.decideT = 1.6 // wait for the lid
       return
     }
-    const got = this.loot.botTakeBestWeaponNear(b.pos.x, b.pos.z, 5, b.gear ? b.gear.power : 0)
+    const got = this.loot.botTakeBestWeaponNear(b.pos.x, b.pos.y, b.pos.z, 5, b.gear ? b.gear.power : 0)
     if (got && got.type === 'weapon') {
       if (b.gear) {
         this.loot.spawnFloor({ type: 'weapon', weaponId: b.gear.defId, rarity: b.gear.rarity }, b.pos.x + 0.5, b.pos.z + 0.5, b.pos.y, buildingAt(b.pos.x, b.pos.z)?.id ?? null)
@@ -493,7 +523,7 @@ export class BotManager implements TargetField {
       this.refreshGunMesh(b)
       audio.pickup()
     }
-    const supplies = this.loot.botTakeSuppliesNear(b.pos.x, b.pos.z, 5, b.vitals.armor < 50)
+    const supplies = this.loot.botTakeSuppliesNear(b.pos.x, b.pos.y, b.pos.z, 5, b.vitals.armor < 50)
     for (const s of supplies) this.applySupply(b, s)
   }
 
@@ -547,6 +577,7 @@ export class BotManager implements TargetField {
       const engageRange = !def ? 3 : def.cls === 'pistol' ? 34 : def.cls === 'shotgun' ? 26 : def.cls === 'smg' ? 45 : def.cls === 'sniper' ? 220 : def.cls === 'dmr' ? 150 : 110
       const wantsFight = bestTarget !== null && (bestDist <= engageRange || b.state === 'engage')
 
+      if (bestTarget) b.lostT = 0
       if (b.vitals.health < 40 && b.heals > 0 && !bestTarget) {
         b.state = 'heal'
       } else if (bestTarget && !b.gear && bestDist > 3.5) {
@@ -557,10 +588,24 @@ export class BotManager implements TargetField {
         }
       } else if (wantsFight) {
         b.state = 'engage'
-      } else if (b.state === 'engage' || b.state === 'heal' || (b.state === 'flee' && b.fleeT <= 0)) {
+      } else if (b.state === 'heal') {
+        // Patched up (or out of supplies): back to the loop.
+        b.state = 'rotate'
+        b.chooseNext = true
+      } else if (b.state === 'engage') {
+        // Target gone: give it a moment to reappear, then get back to work.
+        b.lostT += 0.2
+        if (b.lostT > 1.2) {
+          b.lostT = 0
+          b.state = 'rotate'
+          b.targetId = null
+          b.chooseNext = true
+        }
+      } else if (b.state === 'flee' && b.fleeT <= 0) {
+        b.state = 'rotate'
+        b.targetId = null
         b.chooseNext = true
       }
-      if (b.state === 'flee' && b.fleeT <= 0) b.chooseNext = true
 
       // Path progression / arrival.
       if (b.state !== 'engage' && b.state !== 'heal' && b.state !== 'flee') {
@@ -569,8 +614,8 @@ export class BotManager implements TargetField {
           const needsGear = !b.gear || (this.matchTime < 240 && b.gear.power < 150) || b.heals < SUPPLY_THRESHOLD
           if (needsGear || this.rng() < 0.35) this.chooseLootGoal(b)
           else {
-            b.path = [{ ...this.pointInZone(), kind: 'point' }]
-            b.goalBuilding = null
+            const p = this.pointInZone()
+            this.pathTo(b, p.x, p.z, null, 'point')
             b.state = this.rng() < 0.4 ? 'wander' : 'rotate'
           }
         } else {
@@ -586,13 +631,12 @@ export class BotManager implements TargetField {
                 const done = b.visited
                 if (bl) {
                   const nextRoom = bl.rooms.find((r) => r.floor === 0 && Math.hypot(r.x - wp.x, r.z - wp.z) > 2 && !b.path.some((p) => Math.hypot(p.x - r.x, p.z - r.z) < 1))
-                  const roomsSeen = (b as unknown as { seenRooms?: number }).seenRooms ?? 0
-                  if (nextRoom && roomsSeen < 3) {
-                    ;(b as unknown as { seenRooms: number }).seenRooms = roomsSeen + 1
+                  if (nextRoom && b.seenRooms < 3) {
+                    b.seenRooms++
                     b.path.push({ x: nextRoom.x, z: nextRoom.z, kind: 'room' })
                   } else {
                     done.add(bl.id)
-                    ;(b as unknown as { seenRooms: number }).seenRooms = 0
+                    b.seenRooms = 0
                   }
                 }
               }
@@ -607,12 +651,17 @@ export class BotManager implements TargetField {
     let wishX = 0
     let wishZ = 0
     if (b.state === 'heal') {
-      b.healT += dt
-      if (b.healT > 3.2) {
-        b.healT = 0
-        b.heals--
-        b.vitals.health = Math.min(100, b.vitals.health + 60)
-        this.emissions.report(b.id, 'heal', 0.5)
+      if (b.heals <= 0 || b.vitals.health >= 100) {
+        b.state = 'rotate'
+        b.chooseNext = true
+      } else {
+        b.healT += dt
+        if (b.healT > 3.2) {
+          b.healT = 0
+          b.heals--
+          b.vitals.health = Math.min(100, b.vitals.health + 60)
+          this.emissions.report(b.id, 'heal', 0.5)
+        }
       }
     } else if (b.state === 'flee' && b.targetId) {
       const t = b.targetId === 'player' ? player?.pos : this.bots.get(b.targetId)?.pos
@@ -631,6 +680,8 @@ export class BotManager implements TargetField {
       const tAlive = b.targetId === 'player' ? player?.alive : (t as Bot | undefined)?.alive
       if (!tPos || !tAlive) {
         b.targetId = null
+        b.state = 'rotate'
+        b.chooseNext = true
       } else {
         const dx = tPos.x - b.pos.x
         const dz = tPos.z - b.pos.z
@@ -697,10 +748,15 @@ export class BotManager implements TargetField {
         b.stallT += dt
         if (b.stallT > 1.5) {
           b.stallT = 0
-          // Stuck on a wall: drop the plan and try somewhere else.
+          // Stuck on a wall: blacklist what we were walking to, then re-plan.
+          if (b.goalLootId !== null) b.failedLoot.add(b.goalLootId)
+          if (b.goalCrateId !== null) b.failedCrates.add(b.goalCrateId)
           if (b.goalBuilding !== null) b.visited.add(b.goalBuilding)
+          b.goalLootId = null
+          b.goalCrateId = null
           b.path = []
           b.goalBuilding = null
+          if (b.state !== 'flee') b.state = 'rotate'
           b.chooseNext = true
         }
       } else {

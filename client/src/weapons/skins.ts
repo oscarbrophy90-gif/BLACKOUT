@@ -8,6 +8,8 @@ import { Emitter, particleRecipe } from '../world/particles.ts'
 // behaviour for the trim, and an optional particle emitter on the gun.
 
 const texCache = new Map<string, THREE.CanvasTexture>()
+/** Textures kept resident; the oldest are disposed when a new one is drawn. */
+const TEX_CACHE_MAX = 32
 
 function hashStr(s: string): number {
   let h = 2166136261
@@ -28,7 +30,12 @@ function rngFrom(seed: number): () => number {
 export function skinTexture(spec: SkinSpec): THREE.CanvasTexture {
   const key = `${spec.pattern}|${spec.palette.join('')}`
   const cached = texCache.get(key)
-  if (cached) return cached
+  if (cached) {
+    // Refresh LRU order.
+    texCache.delete(key)
+    texCache.set(key, cached)
+    return cached
+  }
   const S = 256
   const c = document.createElement('canvas')
   c.width = S
@@ -216,6 +223,11 @@ export function skinTexture(spec: SkinSpec): THREE.CanvasTexture {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping
   tex.colorSpace = THREE.SRGBColorSpace
   texCache.set(key, tex)
+  while (texCache.size > TEX_CACHE_MAX) {
+    const oldest = texCache.keys().next().value as string
+    texCache.get(oldest)?.dispose()
+    texCache.delete(oldest)
+  }
   return tex
 }
 

@@ -319,6 +319,11 @@ export class Match {
     this.controller.invertY = this.profile.settings.invertY
   }
 
+  /** Read through a call so TypeScript's narrowing does not hide a phase change made by end(). */
+  private isEnded(): boolean {
+    return this.phaseState.phase === 'ended'
+  }
+
   /** QA hook (main.ts, `?debug`): resolve the contract now at the given placement. */
   debugFinish(place: number): void {
     if (this.phaseState.phase === 'ended') return
@@ -387,7 +392,6 @@ export class Match {
     // contract has no last light yet.
     const resolved = won || (!this.player.alive && this.bots.aliveCount() <= 1)
     const winnerName = won ? this.profile.name : resolved ? this.bots.aliveBots()[0]?.name ?? 'nobody' : ''
-    if (won) audio.victory()
     this.stopEmote()
     this.onEnded?.({
       outcome,
@@ -515,6 +519,9 @@ export class Match {
       const botsAlive = this.bots.aliveCount()
       if (this.player.alive && botsAlive === 0) this.end(true)
       else if (!this.player.alive && botsAlive <= 1 && this.phaseState.phase === 'spectate') this.end(false)
+      // end() hands the camera to the ending sequence synchronously — never
+      // write the camera or FOV again after that.
+      if (this.isEnded()) return
     }
 
     // Camera.
@@ -576,7 +583,8 @@ export class Match {
 
     // Emission from movement, continuous.
     const mf = this.controller.moveFactor
-    this.emissions.setMove('player', this.controller.crouching ? 0.05 : mf > 0.75 ? 0.5 : mf > 0.1 ? 0.25 : 0.03)
+    // Showing off is loud on the grid: an emote lights you up like a sprint.
+    this.emissions.setMove('player', this.emote ? 0.5 : this.controller.crouching ? 0.05 : mf > 0.75 ? 0.5 : mf > 0.1 ? 0.25 : 0.03)
 
     const channelling = this.player.update(dt)
     if (channelling && (this.controller.sprinting || !this.controller.grounded)) this.player.cancelChannel()

@@ -124,7 +124,7 @@ function wall(
       color, solid: true, edges,
     })
   }
-  const sorted = [...openings].sort((p, q) => p.from - q.from)
+  const sorted = openings.filter((o) => o.to - o.from >= 0.05).sort((p, q) => p.from - q.from)
   let cursor = from
   for (const o of sorted) {
     mk(cursor, o.from, 0, height)
@@ -165,15 +165,49 @@ function stairs(x: number, z0: number, baseY: number, dirZ: 1 | -1, color: strin
   }
 }
 
+/**
+ * Steps outside a door, descending from the floor to the terrain. Rises
+ * stay under the collision step height so they walk both ways.
+ */
+function stoop(door: { x: number; z: number; nx: number; nz: number }, doorW: number, floorY: number, color: string, out: BoxOut[]): void {
+  const RISE = 0.32
+  const RUN = 0.5
+  let top = floorY - RISE
+  for (let i = 0; i < 16; i++) {
+    const cx = door.x + door.nx * (WALL / 2 + RUN * (i + 0.5))
+    const cz = door.z + door.nz * (WALL / 2 + RUN * (i + 0.5))
+    const g = heightAt(cx, cz)
+    if (top <= g + 0.12) break
+    const along = doorW + 0.8
+    out.push({
+      x: cx, z: cz, y: g - 0.4,
+      w: door.nx !== 0 ? RUN + 0.02 : along, d: door.nx !== 0 ? along : RUN + 0.02,
+      h: top - (g - 0.4), color, solid: true, edges: false,
+    })
+    top -= RISE
+  }
+}
+
 export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): KitOut | null {
   const { x, z, w, d, style, color } = spec
-  const base = Math.min(heightAt(x - w / 2, z - d / 2), heightAt(x + w / 2, z - d / 2), heightAt(x - w / 2, z + d / 2), heightAt(x + w / 2, z + d / 2), heightAt(x, z))
-  if (base < 0.5) return null
-  const out: BoxOut[] = []
   const x0 = x - w / 2
   const x1 = x + w / 2
   const z0 = z - d / 2
   const z1 = z + d / 2
+  // The floor must clear the HIGHEST ground under the footprint (or terrain
+  // pokes through interiors and buries doors); the plinth reaches the LOWEST.
+  let lo = Infinity
+  let hi = -Infinity
+  for (let i = 0; i <= 4; i++) {
+    for (let j = 0; j <= 4; j++) {
+      const h = heightAt(x0 + (w * i) / 4, z0 + (d * j) / 4)
+      lo = Math.min(lo, h)
+      hi = Math.max(hi, h)
+    }
+  }
+  if (lo < 0.5) return null
+  const out: BoxOut[] = []
+  const base = hi + 0.1
   const floorY = base + SLAB
   const wallColor = color
   const darker = shade(color, 0.85)
@@ -186,8 +220,8 @@ export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): Ki
   const H = tall ? (style === 'hangar' ? 10 : 7.5) : FLOOR_H
   const floors = tall ? 1 : spec.floors
 
-  // Ground slab (levels the interior on sloped terrain).
-  slab(x0, x1, z0, z1, base, darker, out)
+  // Plinth: from below the lowest corner up to the floor, so nothing floats.
+  out.push({ x, z, y: lo - 0.5, w, d, h: floorY - (lo - 0.5), color: darker, solid: true, edges: false })
 
   // Exterior walls per floor with doors on the ground floor and windows.
   for (let f = 0; f < floors; f++) {
@@ -212,11 +246,15 @@ export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): Ki
       if (isHangarFront) {
         const mid = (s.from + s.to) / 2
         openings.push({ from: mid - 4, to: mid + 4, bottom: 0, top: 6 })
-        building.doors.push({ x: mid, z: s.fixed, nx: 0, nz: -1 })
+        const door = { x: mid, z: s.fixed, nx: 0, nz: -1 }
+        building.doors.push(door)
+        stoop(door, 8, floorY, darker, out)
       } else if (doorSides.includes(s.key)) {
         const mid = s.from + len * (0.35 + rng() * 0.3)
         openings.push({ from: mid - doorW / 2, to: mid + doorW / 2, bottom: 0, top: doorH })
-        building.doors.push(s.axis === 'x' ? { x: mid, z: s.fixed, nx: s.nx, nz: s.nz } : { x: s.fixed, z: mid, nx: s.nx, nz: s.nz })
+        const door = s.axis === 'x' ? { x: mid, z: s.fixed, nx: s.nx, nz: s.nz } : { x: s.fixed, z: mid, nx: s.nx, nz: s.nz }
+        building.doors.push(door)
+        stoop(door, doorW, floorY, darker, out)
       }
       // Windows: spaced along the wall, skipping door zones.
       const winCount = Math.max(0, Math.floor(len / 4.2))
@@ -243,10 +281,23 @@ export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): Ki
     if (!tall && interiorW > 7 && interiorD > 7) {
       // Split into 2 (or 4) rooms with doorways in the partitions.
       const splitX = x0 + WALL + interiorW * (0.4 + rng() * 0.2)
-      wall('z', splitX, z0 + WALL, z1 - WALL, y, FLOOR_H, [{ from: z + (rng() - 0.5) * interiorD * 0.4 - DOOR_W / 2, to: z + (rng() - 0.5) * 0 + DOOR_W / 2, bottom: 0, top: DOOR_H }], darker, false, out)
+      // One doorway of exactly DOOR_W, centred at a random offset kept clear of the ends.
+      const maxOff = interiorD / 2 - DOOR_W / 2 - 0.5
+      const doorOff = Math.max(-maxOff, Math.min(maxOff, (rng() - 0.5) * interiorD * 0.4))
+      const zOpenings: Opening[] = [{ from: z + doorOff - DOOR_W / 2, to: z + doorOff + DOOR_W / 2, bottom: 0, top: DOOR_H }]
+      // Doors were placed first: if the partition would stand inside (or a
+      // capsule width from) an exterior doorway, cut it back so the entrance
+      // opens into both rooms.
+      const CLEAR = DOOR_W / 2 + WALL / 2 + 0.9
+      const front = f === 0 ? building.doors.find((dd) => dd.nz === -1) : undefined
+      if (front && Math.abs(front.x - splitX) < CLEAR) zOpenings.push({ from: z0 + WALL, to: z0 + WALL + DOOR_W + 0.6, bottom: 0, top: DOOR_H })
+      wall('z', splitX, z0 + WALL, z1 - WALL, y, FLOOR_H, zOpenings, darker, false, out)
       if (interiorD > 12) {
         const splitZ = z0 + WALL + interiorD * (0.4 + rng() * 0.2)
-        wall('x', splitZ, x0 + WALL, splitX - WALL / 2, y, FLOOR_H, [{ from: (x0 + splitX) / 2 - DOOR_W / 2, to: (x0 + splitX) / 2 + DOOR_W / 2, bottom: 0, top: DOOR_H }], darker, false, out)
+        const xOpenings: Opening[] = [{ from: (x0 + splitX) / 2 - DOOR_W / 2, to: (x0 + splitX) / 2 + DOOR_W / 2, bottom: 0, top: DOOR_H }]
+        const west = f === 0 ? building.doors.find((dd) => dd.nx === -1) : undefined
+        if (west && Math.abs(west.z - splitZ) < CLEAR) xOpenings.push({ from: x0 + WALL, to: x0 + WALL + DOOR_W + 0.6, bottom: 0, top: DOOR_H })
+        wall('x', splitZ, x0 + WALL, splitX - WALL / 2, y, FLOOR_H, xOpenings, darker, false, out)
         rooms.push({ x0: x0 + WALL, x1: splitX, z0: z0 + WALL, z1: splitZ }, { x0: x0 + WALL, x1: splitX, z0: splitZ, z1: z1 - WALL }, { x0: splitX, x1: x1 - WALL, z0: z0 + WALL, z1: z1 - WALL })
       } else {
         rooms.push({ x0: x0 + WALL, x1: splitX, z0: z0 + WALL, z1: z1 - WALL }, { x0: splitX, x1: x1 - WALL, z0: z0 + WALL, z1: z1 - WALL })
@@ -280,13 +331,13 @@ export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): Ki
         const px = r.x0 + 0.8 + rng() * Math.max(0.5, r.x1 - r.x0 - 1.6)
         const pz = r.z0 + 0.8 + rng() * Math.max(0.5, r.z1 - r.z0 - 1.6)
         if (stairHole && px > stairHole.x0 - 0.5 && px < stairHole.x1 + 0.5 && pz > stairHole.z0 - 0.5 && pz < stairHole.z1 + 0.5) continue
-        lootPoints.push({ x: px, z: pz, y: y + SLAB, grade, buildingId: building.id })
+        lootPoints.push({ x: px, z: pz, y, grade, buildingId: building.id })
       }
       const rcx = (r.x0 + r.x1) / 2
       const rcz = (r.z0 + r.z1) / 2
-      building.rooms.push({ x: rcx, z: rcz, y: y + SLAB, floor: f })
+      building.rooms.push({ x: rcx, z: rcz, y, floor: f })
       if (rng() < (grade === 3 ? 0.55 : grade === 2 ? 0.38 : 0.25)) {
-        cratePoints.push({ x: rcx + (rng() - 0.5) * 2, z: rcz + (rng() - 0.5) * 2, y: y + SLAB, grade, buildingId: building.id })
+        cratePoints.push({ x: rcx + (rng() - 0.5) * 2, z: rcz + (rng() - 0.5) * 2, y, grade, buildingId: building.id })
       }
     }
     // Next floor slab with the stairwell hole; or the roof.

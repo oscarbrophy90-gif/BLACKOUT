@@ -60,6 +60,7 @@ class PodiumScene {
   private winnerReplayAt = -1
   private winnerSpec = CELEBRATIONS_BY_ID.get(STARTER_ITEMS.celebration)!.anim
   private tmp = new THREE.Vector3()
+  private textures: THREE.Texture[] = []
   private baseFov: number
   private disposed = false
 
@@ -115,9 +116,11 @@ class PodiumScene {
       const edges = new THREE.LineSegments(new THREE.EdgesGeometry(block.geometry), new THREE.LineBasicMaterial({ color: PODIUM_COLORS[i] }))
       edges.position.copy(block.position)
       scene.add(edges)
+      const numTex = numberTexture(String(i + 1), PODIUM_COLORS[i])
+      this.textures.push(numTex)
       const num = new THREE.Mesh(
         new THREE.PlaneGeometry(0.7, 0.7 * Math.min(1, h / 0.8)),
-        new THREE.MeshBasicMaterial({ map: numberTexture(String(i + 1), PODIUM_COLORS[i]) }),
+        new THREE.MeshBasicMaterial({ map: numTex }),
       )
       num.position.set(x, h / 2, -0.86)
       num.rotation.y = Math.PI
@@ -271,6 +274,7 @@ class PodiumScene {
       s.rig.dispose()
     }
     for (const e of this.emitters) e.dispose()
+    for (const t of this.textures) t.dispose()
     this.overlay.remove()
     this.engine.camera.fov = this.baseFov
     this.engine.camera.updateProjectionMatrix()
