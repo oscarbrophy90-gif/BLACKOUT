@@ -26,6 +26,11 @@ export const EMOTES_BY_ID: ReadonlyMap<string, EmoteItem> = new Map(EMOTES.map((
 export const WEAPON_SKINS_BY_ID: ReadonlyMap<string, WeaponSkinItem> = new Map(WEAPON_SKINS_CATALOG.map((c) => [c.id, c]))
 export const ACCESSORIES_BY_ID: ReadonlyMap<string, AccessoryItem> = new Map(ACCESSORIES.map((c) => [c.id, c]))
 
+/** The emote wheel: six slots, hold B to open. */
+export const EMOTE_SLOTS = 6
+/** Emotes every account owns; they fill the first wheel slots. */
+export const STARTER_EMOTES: readonly string[] = ['EM_001', 'EM_002', 'EM_003']
+
 /** Starter cosmetics every account owns and equips by default. */
 export const STARTER_ITEMS = {
   celebration: 'WC_001',

@@ -168,6 +168,23 @@ better guns, and adapt their engagement range to the class they hold.
 Floor weapons are the actual weapon model with a rarity-coloured outline
 (a glow from Rare up, a dark-visible beam from Legendary up).
 
+## Emotes
+
+Hold **B** for the wheel: six slots, filled from the loadout, nothing
+else shows. The pointer-locked mouse drives a cursor over the wedges;
+releasing B (or clicking) fires the highlighted one. The camera eases
+behind the character (0.4 s), the emote plays on the same rig and
+cosmetics the depot shows, then the camera eases back into the helmet
+(0.3 s). Moving, being hit, or B again cancels it. **One emote per 10
+seconds**, timed from activation so reopening the wheel cannot skip it;
+the wheel greys out and counts down, and the HUD chip does too. Emoting
+is loud (sprint-level emission) — a show in the dark is a choice.
+
+Bots use the same rig, cosmetics and emotes: they carry their found gun
+in hand, walk with a procedural stride, aim when engaged, and sometimes
+flex after a kill or while idling armed. In the dark a bot's visor glows
+exactly as bright as its emission scalar — the sensory contract, visible.
+
 ## Endings
 
 - **Win** → a VICTORY card with your callsign (camera crane, fanfare,

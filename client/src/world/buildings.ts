@@ -320,9 +320,12 @@ export function makeBuilding(spec: BuildingSpec, rng: Rng, grade: 1 | 2 | 3): Ki
     // Stairs to the next floor, in the largest room's corner.
     if (f < floors - 1) {
       const room = rooms.reduce((a, b) => ((b.x1 - b.x0) * (b.z1 - b.z0) > (a.x1 - a.x0) * (a.z1 - a.z0) ? b : a))
-      const sx = room.x1 - 1.2
-      const sz = room.z0 + 0.6
-      stairHole = stairs(sx, sz, y, 1, darker, out)
+      // Along the back wall, on the side away from any side door, so the
+      // lowest step never lands in an entrance.
+      const eastDoor = building.doors.some((dd) => dd.nx === 1)
+      const sx = eastDoor ? room.x0 + 1.2 : room.x1 - 1.2
+      const sz = room.z1 - 0.6
+      stairHole = stairs(sx, sz, y, -1, darker, out)
     }
     // Loot: 1-3 points per room, crates in some.
     for (const r of rooms) {

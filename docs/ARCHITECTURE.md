@@ -38,6 +38,9 @@ client/src/
     props.ts / accessories.ts / effects.ts
                          every PropId / ShapeId / EffectId as a small builder
     animator.ts          plays an AnimSpec: sequencing, props, effects, camera
+    appearance.ts        Appearance (suit + accessories) → the ONE character
+                         model used by depot, shop, deploy, emotes, podium, bots
+    locomotion.ts        procedural idle/walk/aim poses for that rig
   world/
     terrain.ts           analytic heightfield heightAt(x,z) + 8 districts;
                          the island is identical every match by design
@@ -61,6 +64,7 @@ client/src/
                          instances), crates, supply drops, bot pickup queries
   player/
     controller.ts        FPS movement: walk/sprint/crouch/slide/jump, bob
+    emotes.ts            hold-B wheel → third-person blend → emote → cooldown
     player.ts            vitals, heal channelling, damage intake
     inventory.ts         2 weapon slots + melee + heals + ammo pools
   weapons/
@@ -79,6 +83,7 @@ client/src/
     shop.ts              4 categories × 20 items, 15-minute rotation + countdown
     loadout.ts           owned items by category, equip/unequip
     cards.ts             NAME / ★ RARITY / PRICE / [BUY] card markup
+    emotewheel.ts        the six-wedge wheel (SVG) with cursor and cooldown
     preview.ts           the shared 3D viewport (rig or skinned weapon)
     podium.ts            VICTORY card → podium celebration → match summary
     screens.ts           deploy map, death, pause overlays

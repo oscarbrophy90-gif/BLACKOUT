@@ -531,3 +531,71 @@ button { font: inherit; }
 .loot-chip { font-size: 11px; font-weight: 700; padding: 4px 10px; border: 1px solid var(--rc, #444); color: var(--rc, var(--text-dim)); background: color-mix(in srgb, var(--rc, #000) 12%, transparent); }
 .loot-chip.none { color: var(--text-dim); border-color: #333; }
 .xp-row.total { border-top: 1px solid rgba(154, 163, 173, 0.3); border-bottom: none; margin-top: 4px; padding-top: 8px; color: var(--text); font-weight: 800; }
+
+/* ————— Emote wheel (hold B) ————— */
+.emote-wheel {
+  position: absolute; left: 50%; top: 50%; width: 368px; height: 368px;
+  transform: translate(-50%, -50%) scale(0.82); opacity: 0; pointer-events: none;
+  transition: transform 0.16s cubic-bezier(0.2, 1.2, 0.4, 1), opacity 0.12s;
+}
+.emote-wheel.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.emote-wheel svg { position: absolute; inset: 0; overflow: visible; }
+.ew-bg { fill: rgba(5, 4, 12, 0.55); }
+.ew-wedge {
+  fill: rgba(20, 16, 41, 0.86); stroke: var(--rc, #3a3f4a); stroke-width: 1.5;
+  transform-origin: 50% 50%; transition: fill 0.1s, stroke-width 0.1s, transform 0.12s;
+}
+.ew-wedge.empty { fill: rgba(255, 255, 255, 0.025); stroke-dasharray: 5 5; }
+.ew-wedge.on { fill: color-mix(in srgb, var(--rc) 38%, #141029); stroke-width: 3; transform: scale(1.04); filter: url(#ew-glow); }
+.ew-hub-bg { fill: rgba(8, 6, 20, 0.92); stroke: rgba(57, 240, 224, 0.3); stroke-width: 1; }
+.ew-ring { fill: none; stroke: var(--cyan); stroke-width: 3; stroke-dasharray: 100; stroke-dashoffset: 100; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.2s linear; }
+.ew-labels { position: absolute; inset: 0; }
+.ew-label {
+  position: absolute; transform: translate(-50%, -50%); text-align: center; width: 104px; pointer-events: none;
+  transition: transform 0.12s, color 0.1s;
+}
+.ew-label b { display: block; font-size: 10px; color: var(--text-dim); letter-spacing: 0.1em; }
+.ew-label .ew-name { display: block; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 0 6px #000; }
+.ew-label .ew-rarity { display: block; font-size: 8px; letter-spacing: 0.14em; font-weight: 700; }
+.ew-label.empty .ew-name { color: var(--text-dim); font-weight: 600; }
+.ew-label.empty .ew-rarity { color: #556; letter-spacing: 0.04em; text-transform: none; }
+.ew-label.on { transform: translate(-50%, -50%) scale(1.1); }
+.ew-label.on .ew-name { color: #fff; }
+.ew-hub { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none; }
+.ew-hub-main { font-size: 15px; font-weight: 900; letter-spacing: 0.18em; color: var(--cyan); text-shadow: 0 0 12px rgba(57, 240, 224, 0.6); }
+.ew-hub-sub { font-size: 9px; letter-spacing: 0.14em; color: var(--text-dim); margin-top: 2px; }
+.ew-cursor { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--cyan), 0 0 2px #000; }
+.emote-wheel.cooling .ew-wedge { filter: grayscale(1); opacity: 0.45; }
+.emote-wheel.cooling .ew-label { opacity: 0.5; }
+.emote-wheel.cooling .ew-hub-main { color: var(--danger); text-shadow: 0 0 12px rgba(255, 45, 85, 0.6); font-variant-numeric: tabular-nums; }
+.emote-wheel.cooling .ew-ring { stroke: var(--danger); }
+
+.emote-chip {
+  position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%);
+  background: rgba(10, 12, 20, 0.6); border: 1px solid rgba(57, 240, 224, 0.2);
+  padding: 5px 14px; font-size: 11px; letter-spacing: 0.16em; font-weight: 700; color: var(--text-dim);
+  transition: color 0.2s, border-color 0.2s; font-variant-numeric: tabular-nums;
+}
+.emote-chip.cooling { color: var(--danger); border-color: rgba(255, 45, 85, 0.4); }
+.emote-chip.open { color: var(--cyan); border-color: var(--cyan); }
+
+/* ————— Loadout: emote wheel slots ————— */
+.slot-bar { display: flex; gap: 6px; align-items: stretch; margin-bottom: 12px; flex-wrap: wrap; }
+.slot-bar-label { width: 100%; font-size: 10px; letter-spacing: 0.18em; color: var(--text-dim); margin-bottom: 2px; }
+.slot-btn {
+  flex: 1; min-width: 120px; background: rgba(20, 16, 41, 0.85); color: var(--text-dim);
+  border: 1px solid color-mix(in srgb, var(--rc) 45%, transparent); padding: 8px 10px; font: inherit; cursor: pointer;
+  display: flex; gap: 8px; align-items: center; text-align: left; transition: all 0.12s;
+}
+.slot-btn b { font-size: 14px; color: var(--rc); }
+.slot-btn span { font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot-btn.filled { color: var(--text); }
+.slot-btn:hover { border-color: var(--rc); }
+.slot-btn.on { border-color: var(--cyan); box-shadow: 0 0 14px rgba(57, 240, 224, 0.25); background: rgba(57, 240, 224, 0.08); }
+
+/* ————— Deploy: the same body beside the map ————— */
+.deploy-body { display: flex; gap: 28px; align-items: center; justify-content: center; margin: 10px 0; }
+.deploy-char { width: 250px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.deploy-char .preview-host { width: 250px; height: 330px; min-height: 330px; }
+.deploy-char-name { font-weight: 900; font-size: 18px; letter-spacing: 0.06em; margin-top: 8px; }
+.deploy-char-sub { font-size: 11px; color: var(--text-dim); text-align: center; }

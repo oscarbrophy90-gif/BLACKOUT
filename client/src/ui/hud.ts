@@ -99,6 +99,9 @@ export class Hud {
     this.els.reserve = el('span', 'ammo-reserve', ammoRow)
     this.els.slots = el('div', 'slots', wep)
 
+    // Bottom-centre: the emote hint / cooldown.
+    this.els.emoteChip = el('div', 'emote-chip', r)
+
     this.wireEvents()
   }
 
@@ -154,6 +157,12 @@ export class Hud {
   }
 
   update(s: HudState, zone: ReturnType<ZoneController['minimap']>, dt: number): void {
+    // Emote chip: ready, cooling, or nothing equipped.
+    const chip = this.els.emoteChip
+    const chipText = s.emoteSlots === 0 ? 'B · NO EMOTES EQUIPPED' : s.emoteCooldown > 0 ? `EMOTE · ${Math.ceil(s.emoteCooldown)}s` : 'HOLD B · EMOTE'
+    this.setText('emoteChip', chip, chipText)
+    chip.classList.toggle('cooling', s.emoteCooldown > 0)
+    chip.classList.toggle('open', s.emoteWheel)
     // Vitals.
     this.els.hpFill.style.width = `${s.health}%`
     this.els.arFill.style.width = `${s.armor}%`

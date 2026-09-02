@@ -154,6 +154,11 @@ export class CharacterRig {
     }
   }
 
+  /** Visor emissive strength: cosmetic 0.6 in the light; a bot's emission scalar in the dark. */
+  setVisorGlow(k: number): void {
+    this.visorMat.emissiveIntensity = k
+  }
+
   setColors(c: SuitColors): void {
     this.bodyMat.color.set(c.body)
     this.trimMat.color.set(c.trim)

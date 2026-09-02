@@ -30,6 +30,8 @@ export class CharacterAnimator {
   private effects: CharacterEffects | null = null
   private wallT = 0
   private loop = false
+  /** A pose driven from outside (locomotion) shown whenever nothing is playing. */
+  private held: Pose | null = null
   finished = false
 
   constructor(scene: THREE.Object3D, rig: CharacterRig) {
@@ -104,6 +106,25 @@ export class CharacterAnimator {
     this.timeScale = 1
   }
 
+  /** Stop advancing the clock but leave props/effects and the last pose in place. */
+  stopPlayback(): void {
+    this.spec = null
+  }
+
+  /** Show this pose while no animation plays (bots walking, a frozen final frame). */
+  holdPose(pose: Pose | null): void {
+    this.held = pose
+  }
+
+  /** The pose on the rig right now (for blending out of an emote). */
+  get currentPose(): Pose {
+    return this.pose
+  }
+
+  get playing(): boolean {
+    return this.spec !== null
+  }
+
   setAccessories(specs: AccSpec[]): void {
     for (const a of this.accessories) {
       a.obj.parent?.remove(a.obj)
@@ -147,6 +168,10 @@ export class CharacterAnimator {
     this.wallT += dt
     for (const a of this.accessories) a.update(this.wallT, dt)
     if (!this.spec) {
+      if (this.held) {
+        this.rig.apply(this.held)
+        return
+      }
       // Idle breathing when nothing is playing.
       this.sample_idle(this.wallT)
       return

@@ -42,11 +42,11 @@ function startMatchFlow(): void {
   deployScreen(ui, (x, z) => {
     applyQuality()
     beginMatch(x, z)
-  })
+  }, { preview: lobby.preview, profile })
 }
 
 function beginMatch(dropX: number, dropZ: number): void {
-  match = new Match(engine, input, profile, dropX, dropZ)
+  match = new Match(engine, input, profile, ui, dropX, dropZ)
   hud = new Hud(ui)
   deathOverlayOpen = false
 
@@ -116,6 +116,7 @@ if (new URLSearchParams(location.search).has('debug')) {
     info: () => match?.debugInfo() ?? null,
     finish: (place: number) => match?.debugFinish(place),
     gotoLoot: () => match?.debugGotoLoot() ?? null,
+    gotoBot: () => match?.debugGotoBot() ?? null,
     setCoins: (n: number) => profile.debugSetCoins(n),
   }
 }

@@ -1,6 +1,6 @@
 import {
-  ACCESSORIES_BY_ID, CATALOG, CELEBRATIONS_BY_ID, EMOTES_BY_ID, STARTER_ITEMS, SUITS, WEAPON_SKINS_BY_ID,
-  addMetrics, dailyChallenges, emptyMetrics, levelFromTotalXp, matchRewards, priceOf, weeklyChallenges,
+  ACCESSORIES_BY_ID, CATALOG, CELEBRATIONS_BY_ID, EMOTES_BY_ID, EMOTE_SLOTS, STARTER_EMOTES, STARTER_ITEMS, SUITS,
+  WEAPON_SKINS_BY_ID, addMetrics, dailyChallenges, emptyMetrics, levelFromTotalXp, matchRewards, priceOf, weeklyChallenges,
 } from '@blackout/shared'
 import type {
   AccessoryItem, CatalogItem, CelebrationItem, ChallengeDef, EmoteItem, MatchMetrics, MatchOutcome,
@@ -25,7 +25,8 @@ export interface Settings {
 export interface Equipped {
   suit: string
   celebration: string
-  emote: string
+  /** The emote wheel: EMOTE_SLOTS slots, null = empty. Only these appear in the wheel. */
+  emotes: (string | null)[]
   weaponSkin: string
   /** One accessory per slot, by catalogue id. */
   accessories: string[]
@@ -61,11 +62,11 @@ function defaults(): SaveData {
     name: 'Linewalker',
     xp: 0,
     coins: 600,
-    owned: [STARTER_ITEMS.celebration, STARTER_ITEMS.emote, STARTER_ITEMS.weaponSkin],
+    owned: [STARTER_ITEMS.celebration, ...STARTER_EMOTES, STARTER_ITEMS.weaponSkin],
     equipped: {
       suit: SUITS[0].id,
       celebration: STARTER_ITEMS.celebration,
-      emote: STARTER_ITEMS.emote,
+      emotes: Array.from({ length: EMOTE_SLOTS }, (_, i) => STARTER_EMOTES[i] ?? null),
       weaponSkin: STARTER_ITEMS.weaponSkin,
       accessories: [],
     },
@@ -94,7 +95,7 @@ export class Profile {
     try {
       const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY)
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<SaveData> & { equipped?: Partial<Equipped> & { charm?: string } }
+        const parsed = JSON.parse(raw) as Partial<SaveData> & { equipped?: Partial<Equipped> & { charm?: string; emote?: string } }
         const d = defaults()
         this.data = {
           ...d,
@@ -110,7 +111,15 @@ export class Profile {
         this.data.owned = [...new Set([...d.owned, ...(parsed.owned ?? []).filter((id) => CATALOG.has(id))])]
         const eq = this.data.equipped
         if (!CELEBRATIONS_BY_ID.has(eq.celebration) || !this.owns(eq.celebration)) eq.celebration = STARTER_ITEMS.celebration
-        if (!EMOTES_BY_ID.has(eq.emote) || !this.owns(eq.emote)) eq.emote = STARTER_ITEMS.emote
+        // Older saves had one equipped emote: it takes wheel slot 1.
+        const legacy = parsed.equipped?.emote
+        const slots = Array.isArray(parsed.equipped?.emotes) ? parsed.equipped.emotes : [legacy ?? null]
+        eq.emotes = Array.from({ length: EMOTE_SLOTS }, (_, i) => {
+          const id = slots[i] ?? null
+          return id && EMOTES_BY_ID.has(id) && this.owns(id) ? id : null
+        })
+        // Nothing survived: fill from the starters so the wheel is never blank.
+        if (eq.emotes.every((e) => e === null)) eq.emotes = Array.from({ length: EMOTE_SLOTS }, (_, i) => STARTER_EMOTES[i] ?? null)
         if (!WEAPON_SKINS_BY_ID.has(eq.weaponSkin) || !this.owns(eq.weaponSkin)) eq.weaponSkin = STARTER_ITEMS.weaponSkin
         if (!SUITS.some((s) => s.id === eq.suit)) eq.suit = SUITS[0].id
         eq.accessories = (eq.accessories ?? []).filter((id) => ACCESSORIES_BY_ID.has(id) && this.owns(id))
@@ -216,7 +225,13 @@ export class Profile {
     const eq = this.data.equipped
     switch (item.category) {
       case 'celebration': eq.celebration = id; break
-      case 'emote': eq.emote = id; break
+      case 'emote': {
+        // Already on the wheel: keep it; else the first empty slot, else slot 1.
+        if (eq.emotes.includes(id)) break
+        const empty = eq.emotes.indexOf(null)
+        eq.emotes[empty >= 0 ? empty : 0] = id
+        break
+      }
       case 'weaponSkin': eq.weaponSkin = id; break
       case 'accessory': {
         const slot = item.acc.slot
@@ -227,6 +242,32 @@ export class Profile {
     }
     this.save()
     return true
+  }
+
+  /** Put an owned emote in a specific wheel slot (removing it from any other). */
+  equipEmote(id: string, slot: number): boolean {
+    if (!EMOTES_BY_ID.has(id) || !this.owns(id) || slot < 0 || slot >= EMOTE_SLOTS) return false
+    const eq = this.data.equipped
+    for (let i = 0; i < eq.emotes.length; i++) if (eq.emotes[i] === id) eq.emotes[i] = null
+    eq.emotes[slot] = id
+    this.save()
+    return true
+  }
+
+  unequipEmoteSlot(slot: number): void {
+    if (slot < 0 || slot >= EMOTE_SLOTS) return
+    this.data.equipped.emotes[slot] = null
+    this.save()
+  }
+
+  /** Which wheel slot an emote sits in, or -1. */
+  emoteSlotOf(id: string): number {
+    return this.data.equipped.emotes.indexOf(id)
+  }
+
+  /** The wheel, slot by slot. */
+  emoteSlots(): (EmoteItem | null)[] {
+    return this.data.equipped.emotes.map((id) => (id ? EMOTES_BY_ID.get(id) ?? null : null))
   }
 
   unequipAccessory(id: string): void {
@@ -243,15 +284,17 @@ export class Profile {
 
   isEquipped(id: string): boolean {
     const eq = this.data.equipped
-    return eq.celebration === id || eq.emote === id || eq.weaponSkin === id || eq.accessories.includes(id) || eq.suit === id
+    return eq.celebration === id || eq.emotes.includes(id) || eq.weaponSkin === id || eq.accessories.includes(id) || eq.suit === id
   }
 
   celebration(): CelebrationItem {
     return CELEBRATIONS_BY_ID.get(this.data.equipped.celebration) ?? CELEBRATIONS_BY_ID.get(STARTER_ITEMS.celebration)!
   }
 
+  /** The first emote on the wheel (labels, previews). */
   emote(): EmoteItem {
-    return EMOTES_BY_ID.get(this.data.equipped.emote) ?? EMOTES_BY_ID.get(STARTER_ITEMS.emote)!
+    const first = this.data.equipped.emotes.find((e) => e !== null)
+    return (first ? EMOTES_BY_ID.get(first) : undefined) ?? EMOTES_BY_ID.get(STARTER_ITEMS.emote)!
   }
 
   weaponSkin(): WeaponSkinItem {

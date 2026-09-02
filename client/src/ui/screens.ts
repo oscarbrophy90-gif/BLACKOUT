@@ -1,5 +1,7 @@
 import { audio } from '../core/audio.ts'
 import type { Profile } from '../meta/data.ts'
+import { esc } from './cards.ts'
+import type { Preview3D } from './preview.ts'
 import { ISLAND_RADIUS } from '../config.ts'
 import { heightAt } from '../world/terrain.ts'
 import { mapToWorld, renderIslandBase, worldToMap } from './map.ts'
@@ -14,21 +16,44 @@ function overlay(cls: string, parent: HTMLElement): HTMLElement {
   return e
 }
 
-/** The deploy map: click a drop point, confirm or let the clock run out. */
-export function deployScreen(parent: HTMLElement, onDrop: (x: number, z: number) => void): () => void {
+/**
+ * The deploy map: click a drop point, confirm or let the clock run out.
+ * The same Linewalker the depot shows stands beside the map, so the body
+ * you drop in is the body you dressed.
+ */
+export function deployScreen(
+  parent: HTMLElement,
+  onDrop: (x: number, z: number) => void,
+  character?: { preview: Preview3D; profile: Profile },
+): () => void {
   const root = overlay('deploy', parent)
+  const p = character?.profile
+  const wheel = p ? p.emoteSlots() : []
   root.innerHTML = `
     <div class="deploy-head">
       <h1>CHOOSE YOUR INSERTION</h1>
       <p>Vantera's grid dies tonight. 100 salvage contracts. One gets paid.</p>
     </div>
-    <div class="deploy-map-wrap"></div>
+    <div class="deploy-body">
+      ${p ? `<div class="deploy-char">
+        <div class="preview-host deploy-preview"></div>
+        <div class="deploy-char-name">${esc(p.name)}</div>
+        <div class="deploy-char-sub">${esc(p.suit().name)}${p.accessories().length ? ` · ${p.accessories().map((a) => esc(a.name)).join(', ')}` : ''}</div>
+        <div class="deploy-char-sub">Wheel: ${wheel.filter(Boolean).length}/${wheel.length} emotes · Celebration: ${esc(p.celebration().name)}</div>
+      </div>` : ''}
+      <div class="deploy-map-wrap"></div>
+    </div>
     <div class="deploy-foot">
       <div class="deploy-timer">AUTO-DROP <b>12</b></div>
       <button class="btn primary drop-btn" disabled>DROP</button>
     </div>`
   const wrap = root.querySelector('.deploy-map-wrap')!
-  const size = Math.min(560, window.innerHeight - 240, window.innerWidth - 80)
+  const size = Math.min(520, window.innerHeight - 260, window.innerWidth - (character ? 400 : 80))
+  if (character) {
+    character.preview.mount(root.querySelector('.deploy-preview') as HTMLElement)
+    character.preview.setAccent('#39f0e0')
+    character.preview.showCharacter({ suit: character.profile.suit(), accessories: character.profile.accessories().map((a) => a.acc), anim: null })
+  }
   const base = renderIslandBase(size, true)
   base.className = 'deploy-map'
   wrap.appendChild(base)
@@ -74,9 +99,10 @@ export function deployScreen(parent: HTMLElement, onDrop: (x: number, z: number)
 
   const go = () => {
     window.clearInterval(tick)
-    const p = chosen ?? randomDrop()
+    const drop = chosen ?? randomDrop()
+    character?.preview.unmount()
     root.remove()
-    onDrop(p.x, p.z)
+    onDrop(drop.x, drop.z)
   }
   btn.addEventListener('click', () => {
     audio.ui('click')
@@ -84,6 +110,7 @@ export function deployScreen(parent: HTMLElement, onDrop: (x: number, z: number)
   })
   return () => {
     window.clearInterval(tick)
+    character?.preview.unmount()
     root.remove()
   }
 }

@@ -1,8 +1,14 @@
 import * as THREE from 'three'
 import {
-  ACCESSORIES, CELEBRATIONS, SUITS, WEAPON_BY_ID, WEAPONS, applyHit, dps, falloff, makeCallsign,
+  ACCESSORIES, CELEBRATIONS, EMOTES, EMOTES_BY_ID, SUITS, WEAPON_BY_ID, WEAPONS, applyHit, dps, falloff, makeCallsign,
   scaledDamage, signatureOf, RARITY_RANK, RARITIES,
 } from '@blackout/shared'
+import { appearanceFromIds, buildCharacter } from '../character/appearance.ts'
+import type { Character } from '../character/appearance.ts'
+import { locomotionPose, strideRate } from '../character/locomotion.ts'
+import { REST, clonePose, lerpPose } from '../character/rig.ts'
+import type { Pose } from '../character/rig.ts'
+import { buildWeaponGroup } from '../weapons/models.ts'
 import type { ItemKind, Rarity, Rng, Vitals, WeaponDef } from '@blackout/shared'
 import { EMBODY_RADIUS, ISLAND_RADIUS, MAX_EMBODIED } from '../config.ts'
 import { audio } from '../core/audio.ts'
@@ -56,7 +62,18 @@ export interface Bot {
   aggression: number
   state: BotState
   embodied: boolean
+  /** The holder of the shared Linewalker rig (same model as the player's). */
   mesh: THREE.Group | null
+  char: Character | null
+  gun: THREE.Group | null
+  gunCls: string | null
+  locoPhase: number
+  pose: Pose
+  poseTarget: Pose
+  /** This bot's own emote (played after a kill or when idling). */
+  emoteId: string
+  emoting: boolean
+  emoteT: number
   path: Waypoint[]
   goalBuilding: number | null
   visited: Set<number>
@@ -104,6 +121,16 @@ export interface PlayerRef {
 
 const MELEE_DMG = 32
 const SUPPLY_THRESHOLD = 2
+
+// One material set for every bot's held gun (skins are the player's thing).
+// Lambert everywhere: nothing on a bot may glow in the dark except the visor,
+// which is driven by its emission scalar.
+const BOT_GUN_MATS = {
+  body: new THREE.MeshLambertMaterial({ color: '#3c4450' }),
+  accent: new THREE.MeshLambertMaterial({ color: '#22262e' }),
+  trim: new THREE.MeshLambertMaterial({ color: '#8899aa' }),
+}
+const BOT_EMOTE_POOL = EMOTES.filter((e) => e.rarity === 'common' || e.rarity === 'uncommon')
 
 export class BotManager implements TargetField {
   bots = new Map<string, Bot>()
@@ -166,6 +193,15 @@ export class BotManager implements TargetField {
         state: 'loot',
         embodied: false,
         mesh: null,
+        char: null,
+        gun: null,
+        gunCls: null,
+        locoPhase: this.rng() * Math.PI * 2,
+        pose: clonePose(REST),
+        poseTarget: clonePose(REST),
+        emoteId: BOT_EMOTE_POOL.length ? BOT_EMOTE_POOL[Math.floor(this.rng() * BOT_EMOTE_POOL.length)].id : 'EM_001',
+        emoting: false,
+        emoteT: 0,
         path: [],
         goalBuilding: null,
         visited: new Set(),
@@ -242,6 +278,7 @@ export class BotManager implements TargetField {
     const res = applyHit(b.vitals, amount, 1)
     b.vitals = res.vitals
     this.emissions.report(id, 'hurt', 0.6)
+    this.stopBotEmote(b)
     if (b.embodied) {
       this.fx.flare(this.tmp.copy(b.pos).add(this.tmp2.set(0, 1.1, 0)), '#ff2d55', 0.6, 0.25)
       if (b.reactT <= 0) {
@@ -266,6 +303,10 @@ export class BotManager implements TargetField {
       this.scene.remove(b.mesh)
       b.mesh = null
     }
+    b.emoting = false
+    this.dropGun(b)
+    b.char?.dispose()
+    b.char = null
     // Embodied deaths pay out: the dead drop whatever they had looted.
     if (b.embodied) {
       const inside = buildingAt(b.pos.x, b.pos.z)
@@ -278,6 +319,8 @@ export class BotManager implements TargetField {
       if (b.heals > 0) this.loot.spawnFloor({ type: 'heal', healId: 'trickle', amount: b.heals }, b.pos.x - 0.6, b.pos.z + 0.5, b.pos.y, bid)
     }
     const killerBot = attackerId !== 'player' && attackerId !== 'deadgrid' ? this.bots.get(attackerId) : null
+    // A visible kill deserves a flex — the same emotes and rig the player has.
+    if (killerBot && killerBot.alive && killerBot.embodied && !killerBot.emoting && this.rng() < 0.4) this.startBotEmote(killerBot)
     const weaponName = weaponDefId ? WEAPON_BY_ID.get(weaponDefId)?.name ?? 'melee' : attackerId === 'deadgrid' ? 'the Deadgrid' : 'melee'
     emit('kill', {
       killerName: attackerId === 'player' ? 'YOU' : attackerId === 'deadgrid' ? 'THE DEADGRID' : killerBot?.name ?? '??',
@@ -307,6 +350,8 @@ export class BotManager implements TargetField {
         this.kill(b, 'deadgrid', null, false)
         continue
       }
+      // Burning is no time for a show.
+      this.stopBotEmote(b)
       if (!(b.embodied || this.rng() < 0.6)) continue
       // Already heading somewhere safe: keep the plan (and its exit doors).
       const last = b.path.length ? b.path[b.path.length - 1] : null
@@ -388,7 +433,7 @@ export class BotManager implements TargetField {
     } else {
       b.pos.y = Math.max(surface, terrain)
     }
-    if (!b.mesh) b.mesh = this.buildMesh(b)
+    if (!b.mesh) b.mesh = this.buildBody(b)
     this.scene.add(b.mesh)
     b.mesh.position.copy(b.pos)
     this.refreshGunMesh(b)
@@ -396,33 +441,88 @@ export class BotManager implements TargetField {
 
   private disembody(b: Bot): void {
     b.embodied = false
+    this.stopBotEmote(b)
     if (b.mesh) this.scene.remove(b.mesh)
     b.targetId = null
   }
 
-  private buildMesh(b: Bot): THREE.Group {
-    const suit = SUITS[b.suitIndex]
-    const g = new THREE.Group()
-    const bodyMat = new THREE.MeshLambertMaterial({ color: suit.colors[0] })
-    const trimMat = new THREE.MeshLambertMaterial({ color: suit.colors[1] })
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.85, 3, 8), bodyMat)
-    body.position.y = 0.95
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 7), trimMat)
-    head.position.y = 1.62
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.08, 0.1), new THREE.MeshLambertMaterial({ color: suit.colors[2] }))
-    visor.position.set(0, 1.64, -0.16)
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.55), new THREE.MeshLambertMaterial({ color: '#22242a' }))
-    gun.name = 'gun'
-    gun.position.set(0.28, 1.25, -0.3)
-    gun.visible = false
-    g.add(body, head, visor, gun)
-    return g
+  /** The same Linewalker rig the player, the depot and the podium use, in this bot's look. */
+  private buildBody(b: Bot): THREE.Group {
+    const char = buildCharacter(appearanceFromIds(SUITS[b.suitIndex].id, [b.accessoryId]))
+    char.anim.holdPose(b.pose)
+    b.char = char
+    return char.holder
   }
 
-  /** The held gun only shows once the bot has actually found one. */
+  /** The held gun only shows once the bot has actually found one; it rides in the right hand. */
   private refreshGunMesh(b: Bot): void {
-    const gun = b.mesh?.getObjectByName('gun')
-    if (gun) gun.visible = b.gear !== null
+    const c = b.char
+    if (!c) return
+    const cls = b.gear ? WEAPON_BY_ID.get(b.gear.defId)?.cls ?? null : null
+    if (cls === b.gunCls) return
+    this.dropGun(b)
+    b.gunCls = cls
+    if (!cls) return
+    const g = buildWeaponGroup(cls, cls === 'sniper' || cls === 'dmr', BOT_GUN_MATS)
+    // Barrel down the forearm: hanging arm = low ready, raised arm = aimed.
+    g.rotation.x = -Math.PI / 2
+    g.position.set(0, -0.02, 0.04)
+    c.rig.sockets.handR.add(g)
+    b.gun = g
+  }
+
+  private dropGun(b: Bot): void {
+    if (!b.gun) return
+    b.gun.parent?.remove(b.gun)
+    b.gun.traverse((o) => (o as THREE.Mesh).geometry?.dispose())
+    b.gun = null
+    b.gunCls = null
+  }
+
+  private startBotEmote(b: Bot): void {
+    const c = b.char
+    const item = EMOTES_BY_ID.get(b.emoteId)
+    if (!c || !item || b.emoting || !b.alive) return
+    // Never in the dark (props and effects would light the bot beyond its
+    // emission scalar) and never inside the Deadgrid.
+    if (this.dark || this.zone.dpsAt(b.pos.x, b.pos.z) > 0) return
+    b.emoting = true
+    c.anim.play(item.anim, { loop: item.anim.loop, withEffects: true })
+    b.emoteT = item.anim.loop ? 4 : Math.min(6, c.anim.duration + 0.3)
+    if (b.gun) b.gun.visible = false
+  }
+
+  private stopBotEmote(b: Bot): void {
+    if (!b.emoting) return
+    b.emoting = false
+    if (b.char) {
+      // Continue from the emote's last frame, not the pose from before it.
+      const last = b.char.anim.currentPose
+      lerpPose(last, last, 0, b.pose)
+      b.char.anim.stop()
+      b.char.anim.holdPose(b.pose)
+    }
+    if (b.gun) b.gun.visible = true
+  }
+
+  /** Locomotion + emote playback + the visor as the dark-light signature. */
+  private animateBody(b: Bot, dt: number, speed: number): void {
+    const c = b.char
+    if (!c) return
+    if (b.emoting) {
+      b.emoteT -= dt
+      if (c.anim.finished || b.emoteT <= 0 || this.dark) this.stopBotEmote(b)
+    }
+    if (!b.emoting) {
+      if (speed > 0) b.locoPhase += dt * strideRate(speed)
+      const aiming = b.state === 'engage' && b.targetId !== null && b.gear !== null
+      locomotionPose({ phase: b.locoPhase, speed: speed / 7, time: this.matchTime + b.locoPhase * 0.37, armed: b.gear !== null, aiming }, b.poseTarget)
+      lerpPose(b.pose, b.poseTarget, Math.min(1, dt * 14), b.pose)
+    }
+    c.anim.update(dt)
+    // In the dark everything glowing on the body — visor, accessories — is
+    // scaled by the emission scalar: the sensory contract, made visible.
+    c.setGlow(this.dark ? this.emissions.lumOf(b.id) * 2.7 : 1)
   }
 
   private perceives(b: Bot, tx: number, ty: number, tz: number, lum: number, moveVisibility: number): boolean {
@@ -578,6 +678,8 @@ export class BotManager implements TargetField {
       const wantsFight = bestTarget !== null && (bestDist <= engageRange || b.state === 'engage')
 
       if (bestTarget) b.lostT = 0
+      if (bestTarget && b.emoting) this.stopBotEmote(b)
+      if (!bestTarget && !b.emoting && b.gear && (b.state === 'wander' || b.state === 'rotate') && this.rng() < 0.004) this.startBotEmote(b)
       if (b.vitals.health < 40 && b.heals > 0 && !bestTarget) {
         b.state = 'heal'
       } else if (bestTarget && !b.gear && bestDist > 3.5) {
@@ -734,6 +836,13 @@ export class BotManager implements TargetField {
       }
     }
 
+    if (b.emoting) {
+      // Hands busy: the body stays put for the show.
+      speed = 0
+      wishX = 0
+      wishZ = 0
+    }
+
     if (speed > 0) {
       const px = b.pos.x
       const pz = b.pos.z
@@ -773,6 +882,7 @@ export class BotManager implements TargetField {
     if (b.mesh) {
       b.mesh.position.copy(b.pos)
       b.mesh.rotation.y = b.yaw
+      this.animateBody(b, dt, speed)
     }
   }
 

@@ -17,7 +17,7 @@ export class Lobby {
   private onPlay: () => void
   private panel: Panel = 'main'
   /** One 3D viewport shared by the depot, the loadout and the shop. */
-  private preview = new Preview3D()
+  private preview3d = new Preview3D()
   private shop: ShopPanel
   private loadout: LoadoutPanel
 
@@ -27,9 +27,14 @@ export class Lobby {
     this.root = document.createElement('div')
     this.root.className = 'screen lobby'
     parent.appendChild(this.root)
-    this.shop = new ShopPanel(this.root, profile, this.preview, () => this.nav('main'), () => this.coinChips())
-    this.loadout = new LoadoutPanel(this.root, profile, this.preview, () => this.nav('main'), () => this.header())
+    this.shop = new ShopPanel(this.root, profile, this.preview3d, () => this.nav('main'), () => this.coinChips())
+    this.loadout = new LoadoutPanel(this.root, profile, this.preview3d, () => this.nav('main'), () => this.header())
     this.render()
+  }
+
+  /** The one 3D viewport, lent to the deploy screen so the drop shows the same body. */
+  get preview(): Preview3D {
+    return this.preview3d
   }
 
   show(): void {
@@ -40,13 +45,13 @@ export class Lobby {
 
   hide(): void {
     this.shop.dispose()
-    this.preview.unmount()
+    this.preview3d.unmount()
     this.root.style.display = 'none'
   }
 
   dispose(): void {
     this.shop.dispose()
-    this.preview.dispose()
+    this.preview3d.dispose()
     this.root.remove()
   }
 
@@ -65,7 +70,7 @@ export class Lobby {
         <div class="preview-host depot-preview"></div>
         <div class="char-name">${esc(this.profile.name)}</div>
         <div class="char-suit">${suit.name}${worn.length ? ` · ${worn.map((a) => a.name).join(', ')}` : ''}</div>
-        <div class="char-suit">Celebration: ${this.profile.celebration().name} · Emote: ${this.profile.emote().name}</div>
+        <div class="char-suit">Celebration: ${esc(this.profile.celebration().name)} · Emote wheel: ${this.profile.emoteSlots().filter(Boolean).length}/${this.profile.emoteSlots().length}</div>
       </div>`
   }
 
@@ -125,10 +130,10 @@ export class Lobby {
           <button class="btn menu-btn" data-p="settings">SETTINGS</button>
         </div>
       </div>
-      <div class="lobby-foot">Vantera's grid dies tonight. Be the last light. · WASD move · SHIFT sprint · C slide · E loot · 4/5 heal · B emote</div>`
-    this.preview.mount(this.root.querySelector('.depot-preview') as HTMLElement)
-    this.preview.setAccent('#39f0e0')
-    this.preview.showCharacter({ suit: this.profile.suit(), accessories: this.profile.accessories().map((a) => a.acc), anim: null })
+      <div class="lobby-foot">Vantera's grid dies tonight. Be the last light. · WASD move · SHIFT sprint · C slide · E loot · 4/5 heal · hold B emote wheel</div>`
+    this.preview3d.mount(this.root.querySelector('.depot-preview') as HTMLElement)
+    this.preview3d.setAccent('#39f0e0')
+    this.preview3d.showCharacter({ suit: this.profile.suit(), accessories: this.profile.accessories().map((a) => a.acc), anim: null })
     this.root.querySelector('.play-btn')!.addEventListener('click', () => {
       audio.ensure()
       audio.ui('click')

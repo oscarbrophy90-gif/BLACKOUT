@@ -4,7 +4,7 @@ import { COLORS, ISLAND_RADIUS } from '../config.ts'
 import type { CollisionWorld } from './collision.ts'
 import { DISTRICTS, WORLD_SEED, heightAt } from './terrain.ts'
 import type { District } from './terrain.ts'
-import { makeBuilding, resetBuildings } from './buildings.ts'
+import { allBuildings, makeBuilding, resetBuildings } from './buildings.ts'
 import type { BuildingStyle } from './buildings.ts'
 
 // Builds every structure on Vantera out of instanced primitives. One
@@ -399,6 +399,11 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
   const m = new THREE.Matrix4()
   const q = new THREE.Quaternion()
   const cvec = new THREE.Color()
+  // Scenery must never stand in a doorway: rocks, stacks and trees that
+  // landed on a door's approach are dropped (buildings were placed after them).
+  const doors = allBuildings().flatMap((b) => b.doors)
+  const blocksDoor = (x: number, z: number, reach: number): boolean =>
+    doors.some((d) => Math.hypot(d.x + d.nx * 2 - x, d.z + d.nz * 2 - z) < reach + 1.2)
   boxes.forEach((b, i) => {
     m.compose(new THREE.Vector3(b.x, b.y, b.z), q, new THREE.Vector3(b.w, b.h, b.d))
     boxMesh.setMatrixAt(i, m)
@@ -416,6 +421,11 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
   cylGeo.translate(0, 0.5, 0)
   const cylMesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshLambertMaterial(), cyls.length)
   cyls.forEach((c, i) => {
+    if (blocksDoor(c.x, c.z, c.r)) {
+      m.compose(new THREE.Vector3(c.x, -50, c.z), q, new THREE.Vector3(0.001, 0.001, 0.001))
+      cylMesh.setMatrixAt(i, m)
+      return
+    }
     m.compose(new THREE.Vector3(c.x, c.y, c.z), q, new THREE.Vector3(c.r, c.h, c.r))
     cylMesh.setMatrixAt(i, m)
     cylMesh.setColorAt(i, cvec.set(c.color))
@@ -430,6 +440,11 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
   const rockMesh = new THREE.InstancedMesh(rockGeo, new THREE.MeshLambertMaterial({ color: '#514d55' }), rocks.length)
   rocks.forEach((r, i) => {
     const y = heightAt(r.x, r.z)
+    if (blocksDoor(r.x, r.z, r.s * 0.7)) {
+      m.compose(new THREE.Vector3(r.x, -50, r.z), q, new THREE.Vector3(0.001, 0.001, 0.001))
+      rockMesh.setMatrixAt(i, m)
+      return
+    }
     m.compose(
       new THREE.Vector3(r.x, y + r.s * 0.2, r.z),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(r.x, r.z, 0)),
@@ -458,6 +473,12 @@ export function buildWorld(scene: THREE.Scene, col: CollisionWorld): WorldData {
   )
   trees.forEach((t, i) => {
     const y = heightAt(t.x, t.z)
+    if (blocksDoor(t.x, t.z, 0.4)) {
+      m.compose(new THREE.Vector3(t.x, -50, t.z), q, new THREE.Vector3(0.001, 0.001, 0.001))
+      trunkMesh.setMatrixAt(i, m)
+      crownMesh.setMatrixAt(i, m)
+      return
+    }
     const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), t.x * 7)
     m.compose(new THREE.Vector3(t.x, y, t.z), rot, new THREE.Vector3(t.s, t.s, t.s))
     trunkMesh.setMatrixAt(i, m)

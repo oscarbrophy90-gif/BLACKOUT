@@ -26,7 +26,10 @@ The other 99 slots are filled by AI Linewalkers for now — they drop in
 empty-handed like you, search buildings and crates for a gun, gear up,
 rotate with the zone, fight each other, and obey the same light-visibility
 rules you do. Buildings are real interiors (doors, rooms, stairs, upper
-floors) with their own loot. Win and your Linewalker takes the podium
+floors) with their own loot. Everybody on the island is the same
+Linewalker rig wearing their own suit and accessories: you in the depot,
+the shop, the drop screen, your emotes and the podium, and every bot, who
+flex with the same emote system after a kill. Win and your Linewalker takes the podium
 performing your equipped celebration; the shop behind it rotates 20 items
 per category every 15 minutes from a 2,000-item catalogue. The multiplayer architecture that replaces
 them with people is designed and documented (see below).
@@ -44,7 +47,7 @@ them with people is designed and documented (see below).
 | E | loot / open crates |
 | 1 / 2 / 3 | weapon slots / maul |
 | 4 / 5 | heal health / recharge armor |
-| B | play your equipped emote (third person) |
+| B (hold) | emote wheel — release on one of your 6 equipped emotes; the camera swings behind you and back |
 | Esc | pause |
 
 ### Run from source

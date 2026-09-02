@@ -1,4 +1,4 @@
-import { CATEGORY_LABEL, RARITY_COLOR, SUITS, WEAPON_CLASSES, WEAPON_CLASS_LABEL } from '@blackout/shared'
+import { CATEGORY_LABEL, EMOTE_SLOTS, RARITY_COLOR, SUITS, WEAPON_CLASSES, WEAPON_CLASS_LABEL } from '@blackout/shared'
 import type { CatalogItem, Category, SuitDef, WeaponClass } from '@blackout/shared'
 import { audio } from '../core/audio.ts'
 import type { Profile } from '../meta/data.ts'
@@ -27,6 +27,8 @@ export class LoadoutPanel {
   private tab: Tab = 'suit'
   private selectedId: string | null = null
   private previewClass: WeaponClass = 'ar'
+  /** Target wheel slot for the next EQUIP on the emotes tab. */
+  private slot = 0
 
   constructor(root: HTMLElement, profile: Profile, preview: Preview3D, onBack: () => void, header: () => string) {
     this.root = root
@@ -49,7 +51,7 @@ export class LoadoutPanel {
           ${TABS.map((t) => `<button class="tab ${t.id === this.tab ? 'on' : ''}" data-tab="${t.id}">${t.label}</button>`).join('')}
         </div>
         <div class="shop-body">
-          <div class="shop-grid-wrap"><div class="shop-grid enter"></div></div>
+          <div class="shop-grid-wrap"><div class="slot-bar"></div><div class="shop-grid enter"></div></div>
           <aside class="shop-side">
             <div class="preview-host"></div>
             <div class="shop-detail"></div>
@@ -85,7 +87,34 @@ export class LoadoutPanel {
       </div>`
   }
 
+  /** The six wheel slots: click one to target it (and select what is in it). */
+  private renderSlotBar(): void {
+    const bar = this.root.querySelector('.slot-bar') as HTMLElement | null
+    if (!bar) return
+    if (this.tab !== 'emote') {
+      bar.innerHTML = ''
+      bar.style.display = 'none'
+      return
+    }
+    bar.style.display = ''
+    const slots = this.profile.emoteSlots()
+    bar.innerHTML = `<div class="slot-bar-label">EMOTE WHEEL · hold B in a match</div>` + slots.map((it, i) => `
+      <button class="slot-btn ${i === this.slot ? 'on' : ''} ${it ? 'filled' : ''}" data-slot="${i}" style="--rc:${it ? RARITY_COLOR[it.rarity] : '#3a3f4a'}">
+        <b>${i + 1}</b><span>${it ? esc(it.name) : 'EMPTY'}</span>
+      </button>`).join('')
+    bar.querySelectorAll('.slot-btn').forEach((btn) =>
+      btn.addEventListener('click', () => {
+        audio.ui('click')
+        this.slot = Math.min(EMOTE_SLOTS - 1, Math.max(0, Number((btn as HTMLElement).dataset.slot)))
+        const it = slots[this.slot]
+        if (it) this.selectedId = it.id
+        this.renderGrid()
+      }),
+    )
+  }
+
   private renderGrid(): void {
+    this.renderSlotBar()
     const g = this.root.querySelector('.shop-grid') as HTMLElement
     g.classList.remove('enter')
     void g.offsetWidth
@@ -176,9 +205,17 @@ export class LoadoutPanel {
     const classes = it.category === 'weaponSkin'
       ? `<div class="class-row">${WEAPON_CLASSES.map((c) => `<button class="mini ${c === this.previewClass ? 'on' : ''}" data-cls="${c}">${WEAPON_CLASS_LABEL[c]}</button>`).join('')}</div>`
       : ''
-    const cta = it.category === 'accessory' && equipped
-      ? '<button class="btn detail-cta unequip-btn">UNEQUIP</button>'
-      : `<button class="btn primary detail-cta equip-btn" ${equipped ? 'disabled' : ''}>${equipped ? 'EQUIPPED' : 'EQUIP'}</button>`
+    let cta: string
+    if (it.category === 'emote') {
+      const inSlot = this.profile.emoteSlotOf(it.id)
+      const here = inSlot === this.slot
+      cta = `<button class="btn primary detail-cta equip-btn" ${here ? 'disabled' : ''}>${here ? `IN SLOT ${this.slot + 1}` : inSlot >= 0 ? `MOVE TO SLOT ${this.slot + 1}` : `EQUIP → SLOT ${this.slot + 1}`}</button>` +
+        (inSlot >= 0 ? '<button class="btn detail-cta unequip-btn">UNEQUIP</button>' : '')
+    } else if (it.category === 'accessory' && equipped) {
+      cta = '<button class="btn detail-cta unequip-btn">UNEQUIP</button>'
+    } else {
+      cta = `<button class="btn primary detail-cta equip-btn" ${equipped ? 'disabled' : ''}>${equipped ? 'EQUIPPED' : 'EQUIP'}</button>`
+    }
     d.innerHTML = `
       <div class="detail-kind">${CATEGORY_LABEL[it.category].toUpperCase()}</div>
       <div class="detail-name r-${it.rarity}" style="--rc:${color}">${esc(it.name)}</div>
@@ -195,13 +232,17 @@ export class LoadoutPanel {
       }),
     )
     d.querySelector('.equip-btn')?.addEventListener('click', () => {
-      if (this.profile.equip(it.id)) {
+      const ok = it.category === 'emote' ? this.profile.equipEmote(it.id, this.slot) : this.profile.equip(it.id)
+      if (ok) {
         audio.ui('equip')
         this.renderGrid()
       }
     })
     d.querySelector('.unequip-btn')?.addEventListener('click', () => {
-      this.profile.unequipAccessory(it.id)
+      if (it.category === 'emote') {
+        const inSlot = this.profile.emoteSlotOf(it.id)
+        if (inSlot >= 0) this.profile.unequipEmoteSlot(inSlot)
+      } else this.profile.unequipAccessory(it.id)
       audio.ui('equip')
       this.renderGrid()
     })

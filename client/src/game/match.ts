@@ -3,8 +3,6 @@ import {
   RARITY_RANK, SUITS, WEAPON_BY_ID, ZONE_PHASES, deriveSeed, emptyMetrics, makeRng,
 } from '@blackout/shared'
 import type { MatchMetrics, MatchOutcome, Rng } from '@blackout/shared'
-import { CharacterAnimator } from '../character/animator.ts'
-import { CharacterRig } from '../character/rig.ts'
 import { GRACE_BEFORE_ZONE, HEARTBEAT_RANGE, MATCH_PLAYERS } from '../config.ts'
 import { audio } from '../core/audio.ts'
 import type { Engine } from '../core/engine.ts'
@@ -15,6 +13,8 @@ import { BotManager } from '../bots/bots.ts'
 import type { Bot } from '../bots/bots.ts'
 import { FPSController } from '../player/controller.ts'
 import { LocalPlayer } from '../player/player.ts'
+import { EmoteController } from '../player/emotes.ts'
+import { EmoteWheel } from '../ui/emotewheel.ts'
 import { Viewmodel } from '../weapons/viewmodel.ts'
 import { WeaponSystem } from '../weapons/weapons.ts'
 import { CollisionWorld } from '../world/collision.ts'
@@ -52,9 +52,6 @@ export interface MatchResult {
   collected: { weapons: { name: string; rarity: string }[]; items: number }
 }
 
-/** How long a looping emote runs before the Linewalker gets back to work. */
-const EMOTE_MAX_SECONDS = 7
-
 export interface HudState {
   health: number
   armor: number
@@ -81,6 +78,11 @@ export interface HudState {
   phaseIdx: number
   spectating: string | null
   matchTime: number
+  /** Seconds left before another emote may start (0 = ready). */
+  emoteCooldown: number
+  /** Filled wheel slots. */
+  emoteSlots: number
+  emoteWheel: boolean
 }
 
 export class Match {
@@ -116,7 +118,8 @@ export class Match {
   private unsubs: (() => void)[] = []
   private collectedWeapons = new Map<string, { name: string; rarity: string }>()
   private collectedItems = 0
-  private emote: { anim: CharacterAnimator; rig: CharacterRig; holder: THREE.Group; t: number } | null = null
+  private emotes: EmoteController
+  private wheel: EmoteWheel
   private tmp = new THREE.Vector3()
   private fovCurrent: number
   onEnded: ((result: MatchResult) => void) | null = null
@@ -125,10 +128,11 @@ export class Match {
   /** Set while a wall of UI (pause) should freeze gameplay input. */
   paused = false
 
-  constructor(engine: Engine, input: Input, profile: Profile, dropX: number, dropZ: number) {
+  constructor(engine: Engine, input: Input, profile: Profile, ui: HTMLElement, dropX: number, dropZ: number) {
     this.engine = engine
     this.input = input
     this.profile = profile
+    this.wheel = new EmoteWheel(ui)
     const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0
     this.rng = makeRng(deriveSeed(seed, 'match'))
 
@@ -155,6 +159,14 @@ export class Match {
       emissions: this.emissions,
     })
     this.fovCurrent = profile.settings.fov
+    this.emotes = new EmoteController({
+      scene: engine.scene,
+      profile,
+      col: this.col,
+      wheel: this.wheel,
+      onFreeze: (f) => { this.controller.frozen = f },
+      onViewmodel: (v) => { this.viewmodel.group.visible = v },
+    })
 
     // Settings.
     this.controller.sensitivity = profile.settings.sensitivity
@@ -180,7 +192,7 @@ export class Match {
       crouching: false,
     }
     this.bots.onPlayerDamaged = (amount, mult, angle, name) => {
-      this.stopEmote()
+      this.emotes.cancel()
       this.player.takeDamage(amount, mult, angle - this.controller.yaw, name, this.matchTime)
     }
     this.player.onDeath = () => this.onPlayerDeath()
@@ -266,42 +278,8 @@ export class Match {
     this.weapons.refreshViewmodel(this.profile.weaponSkin())
   }
 
-  // ——— Emotes: B plays the equipped emote in third person ———
-
-  private startEmote(): void {
-    if (this.emote || !this.player.alive || this.phaseState.phase !== 'live' || !this.controller.grounded) return
-    const suit = this.profile.suit()
-    const rig = new CharacterRig({ body: suit.colors[0], trim: suit.colors[1], visor: suit.colors[2] })
-    // The rig animates relative to a holder planted where the player stands
-    // (poses drive the rig root's own offsets, so it can't sit in the scene directly).
-    const holder = new THREE.Group()
-    holder.position.copy(this.controller.pos)
-    holder.rotation.y = this.controller.yaw
-    holder.add(rig.root)
-    this.engine.scene.add(holder)
-    const anim = new CharacterAnimator(holder, rig)
-    anim.setAccessories(this.profile.accessories().map((a) => a.acc))
-    anim.play(this.profile.emote().anim, { loop: true })
-    this.emote = { anim, rig, holder, t: 0 }
-    this.player.cancelChannel()
-    this.controller.frozen = true
-    this.viewmodel.group.visible = false
-    // Showing off is loud on the grid: emoting lights you up like a sprint.
-    this.emissions.setMove('player', 0.5)
-  }
-
-  private stopEmote(): void {
-    if (!this.emote) return
-    this.emote.anim.dispose()
-    this.engine.scene.remove(this.emote.holder)
-    this.emote.rig.dispose()
-    this.emote = null
-    this.controller.frozen = false
-    this.viewmodel.group.visible = true
-  }
-
   private onPlayerDeath(): void {
-    this.stopEmote()
+    this.emotes.abort()
     this.placementAtDeath = this.bots.aliveCount() + 1
     this.diedAt = this.matchTime
     if (this.bots.player) this.bots.player.alive = false
@@ -345,7 +323,7 @@ export class Match {
     const nx = target.x + Math.cos(ang) * 1.4
     const nz = target.z + Math.sin(ang) * 1.4
     const y = this.col.groundHeight(nx, nz, target.y + 0.6, 0.45, target.y + 0.6)
-    this.stopEmote()
+    this.emotes.abort()
     this.controller.pos.set(nx, y, nz)
     this.controller.vel.set(0, 0, 0)
     // Facing = (-sin yaw, -cos yaw): look straight at the item, slightly down.
@@ -354,14 +332,44 @@ export class Match {
     return target
   }
 
+  /** QA hook: stand a few metres from the nearest embodied bot, facing it. */
+  debugGotoBot(): { name: string; x: number; z: number; armed: boolean } | null {
+    const p = this.controller.pos
+    let best: Bot | null = null
+    let bestD = Infinity
+    for (const b of this.bots.bots.values()) {
+      if (!b.alive) continue
+      const d = Math.hypot(b.pos.x - p.x, b.pos.z - p.z)
+      if (d < bestD) {
+        best = b
+        bestD = d
+      }
+    }
+    if (!best) return null
+    const ang = Math.random() * Math.PI * 2
+    const nx = best.pos.x + Math.cos(ang) * 4
+    const nz = best.pos.z + Math.sin(ang) * 4
+    const clear = this.col.findClearGround(nx, nz, 12)
+    const y = this.col.groundHeight(clear.x, clear.z, best.pos.y + 0.6, 0.45, best.pos.y + 3)
+    this.emotes.abort()
+    this.controller.pos.set(clear.x, y, clear.z)
+    this.controller.vel.set(0, 0, 0)
+    this.controller.yaw = Math.atan2(-(best.pos.x - clear.x), -(best.pos.z - clear.z))
+    this.controller.pitch = -0.05
+    return { name: best.name, x: best.pos.x, z: best.pos.z, armed: best.gear !== null }
+  }
+
   /** QA hook: the loot race and the phase, for automated checks. */
-  debugInfo(): { phase: string; alive: number; armed: number; landed: boolean; emoting: boolean; y: number } {
+  debugInfo(): { phase: string; alive: number; armed: number; landed: boolean; emoting: boolean; wheel: boolean; emoteCooldown: number; camBlend: boolean; y: number } {
     return {
       phase: this.phaseState.phase,
       alive: this.bots.aliveCount(),
       armed: this.bots.armedCount(),
       landed: this.landed,
-      emoting: this.emote !== null,
+      emoting: this.emotes.playing,
+      wheel: this.emotes.wheelOpen,
+      emoteCooldown: this.emotes.cooldown,
+      camBlend: this.emotes.active,
       y: this.controller.pos.y,
     }
   }
@@ -392,7 +400,7 @@ export class Match {
     // contract has no last light yet.
     const resolved = won || (!this.player.alive && this.bots.aliveCount() <= 1)
     const winnerName = won ? this.profile.name : resolved ? this.bots.aliveBots()[0]?.name ?? 'nobody' : ''
-    this.stopEmote()
+    this.emotes.abort()
     this.onEnded?.({
       outcome,
       metrics: this.metrics,
@@ -430,7 +438,8 @@ export class Match {
   /** Full teardown: scene, listeners, viewmodel, ambience beds. */
   dispose(): void {
     for (const u of this.unsubs) u()
-    this.stopEmote()
+    this.emotes.dispose()
+    this.wheel.dispose()
     this.loot.dispose()
     clearAllHandlers()
     // The audio singleton outlives the match — silence its continuous beds
@@ -525,24 +534,23 @@ export class Match {
     }
 
     // Camera.
-    if (this.emote) {
-      // Third person: hang back over the shoulder and drift around the show.
-      const r = this.emote.holder
-      const yaw = this.controller.yaw + Math.sin(this.emote.t * 0.6) * 0.55
-      const dist = 3.4
-      const cx = r.position.x + Math.sin(yaw) * dist
-      const cz = r.position.z + Math.cos(yaw) * dist
-      const cy = r.position.y + 1.7
-      const ground = this.col.groundHeight(cx, cz, cy + 0.5, 0.3, cy + 2)
-      cam.position.set(cx, Math.max(cy, ground + 0.4), cz)
-      cam.lookAt(r.position.x, r.position.y + 1.05, r.position.z)
+    if (this.emotes.active) {
+      // Third person for the emote, blended smoothly from and back to the helmet.
+      this.controller.eyePos(this.tmp)
+      this.emotes.applyCamera(cam, this.tmp, this.controller.yaw, this.controller.pitch)
     } else if (this.phaseState.phase === 'spectate') {
       const b = this.spectateTarget ? this.bots.bots.get(this.spectateTarget) : null
       if (b?.alive) {
-        cam.position.set(b.pos.x, b.pos.y + 1.55, b.pos.z)
-        cam.rotation.order = 'YXZ'
-        cam.rotation.y = b.yaw
-        cam.rotation.x = 0
+        // Over the shoulder: the spectated Linewalker is a full body now, so
+        // sit behind and above it rather than inside its helmet.
+        const fx = -Math.sin(b.yaw)
+        const fz = -Math.cos(b.yaw)
+        const cx = b.pos.x - fx * 3.2
+        const cz = b.pos.z - fz * 3.2
+        const cy = b.pos.y + 2.1
+        const ground = this.col.groundHeight(cx, cz, cy + 0.5, 0.3, cy + 2)
+        cam.position.set(cx, Math.max(cy, ground + 0.4), cz)
+        cam.lookAt(b.pos.x + fx * 2, b.pos.y + 1.2, b.pos.z + fz * 2)
       }
     } else {
       const bob = this.controller.bobOffset(this.weapons.adsFactor)
@@ -566,25 +574,16 @@ export class Match {
 
   private updateLive(dt: number): void {
     const input = this.input
-    if (input.justPressed('KeyB')) {
-      if (this.emote) this.stopEmote()
-      else this.startEmote()
-    }
-    if (this.emote) {
-      this.emote.t += dt
-      this.emote.anim.update(dt)
-      const moved = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].some((k) => input.isDown(k))
-      if (moved || input.mouseJustPressed(0) || this.emote.t > EMOTE_MAX_SECONDS) this.stopEmote()
-      // Still a target while showing off: the grid, the zone and the bots keep ticking.
-      input.consumeMouse()
-    }
+    // Hold B: the wheel. Release on a slot: the show. The grid keeps ticking throughout.
+    const canEmote = this.player.alive && this.controller.grounded && this.player.channel === null
+    this.emotes.update(dt, input, this.controller.pos, this.controller.yaw, canEmote)
     this.controller.update(dt, input, this.col, this.weapons.adsFactor)
     this.metrics.distance += Math.hypot(this.controller.vel.x, this.controller.vel.z) * dt
 
     // Emission from movement, continuous.
     const mf = this.controller.moveFactor
     // Showing off is loud on the grid: an emote lights you up like a sprint.
-    this.emissions.setMove('player', this.emote ? 0.5 : this.controller.crouching ? 0.05 : mf > 0.75 ? 0.5 : mf > 0.1 ? 0.25 : 0.03)
+    this.emissions.setMove('player', this.emotes.playing ? 0.5 : this.controller.crouching ? 0.05 : mf > 0.75 ? 0.5 : mf > 0.1 ? 0.25 : 0.03)
 
     const channelling = this.player.update(dt)
     if (channelling && (this.controller.sprinting || !this.controller.grounded)) this.player.cancelChannel()
@@ -592,13 +591,13 @@ export class Match {
 
     this.weapons.update(dt, input, {
       skin: this.profile.weaponSkin(),
-      frozen: this.player.channel !== null || this.emote !== null,
+      frozen: this.player.channel !== null || this.emotes.suppressFire,
       time: this.matchTime,
     })
     this.viewmodel.update({ moveFactor: mf, adsFactor: this.weapons.adsFactor, dt, time: this.matchTime })
 
     // Interaction.
-    if (input.justPressed('KeyE') && !this.emote) this.tryInteract()
+    if (input.justPressed('KeyE') && !this.emotes.playing && !this.emotes.wheelOpen) this.tryInteract()
     if (input.justPressed('Digit4')) {
       if (!this.player.startHeal('trickle')) this.player.startHeal('medloop')
     }
@@ -733,6 +732,9 @@ export class Match {
       phaseIdx: this.zone.phaseIdx,
       spectating: spectated?.name ?? null,
       matchTime: this.matchTime,
+      emoteCooldown: this.emotes.cooldown,
+      emoteSlots: this.emotes.equippedCount,
+      emoteWheel: this.emotes.wheelOpen,
     }
   }
 
