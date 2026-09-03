@@ -132,7 +132,7 @@ canvas.addEventListener('click', () => {
 // Losing pointer lock mid-match (Esc) opens the pause screen.
 input.onLockChange = (locked) => {
   if (locked || !match || deathOverlayOpen || match.phaseState.phase === 'ended') return
-  match.paused = true
+  match.pause()
   closePause = pauseScreen(
     ui,
     profile,

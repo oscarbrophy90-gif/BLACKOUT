@@ -99,7 +99,9 @@ export class EmoteController {
   update(dt: number, input: Input, pos: THREE.Vector3, yaw: number, canEmote: boolean): void {
     this.cooldown = Math.max(0, this.cooldown - dt)
     this.fireLock = Math.max(0, this.fireLock - dt)
-    const bDown = input.isDown('KeyB')
+    // The B edge only counts while the pointer is captured: a pause (Esc)
+    // in the middle of a hold must never read as a release on resume.
+    const bDown = input.locked && input.isDown('KeyB')
     const bReleased = this.wasB && !bDown
     this.wasB = bDown
     if (!bDown) this.eatHold = false
@@ -113,6 +115,7 @@ export class EmoteController {
         // Lost the pointer (Esc → pause): close without firing anything.
         if (!input.locked) {
           this.closeWheel()
+          this.wasB = false
           break
         }
         // The pointer is locked: mouse deltas move a virtual cursor.
@@ -205,6 +208,8 @@ export class EmoteController {
   cancel(): void {
     if (this.phase === 'wheel') {
       this.closeWheel()
+      this.wasB = false
+      this.eatHold = true // ignore B until it is physically released again
       return
     }
     if (this.phase !== 'playing') return

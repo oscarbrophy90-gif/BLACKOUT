@@ -291,6 +291,12 @@ export class Match {
     this.onPlayerDied?.({ placement: this.placementAtDeath, killedBy: this.player.lastHitBy, kills: this.kills })
   }
 
+  /** Pointer lock lost (Esc): freeze the sim and drop an open wheel so a stale B-release can never fire it on resume. */
+  pause(): void {
+    this.paused = true
+    if (this.emotes.wheelOpen) this.emotes.cancel()
+  }
+
   /** Re-read live-tunable settings after the pause screen closes. */
   applySettings(): void {
     this.controller.sensitivity = this.profile.settings.sensitivity
@@ -360,8 +366,10 @@ export class Match {
   }
 
   /** QA hook: the loot race and the phase, for automated checks. */
-  debugInfo(): { phase: string; alive: number; armed: number; landed: boolean; emoting: boolean; wheel: boolean; emoteCooldown: number; camBlend: boolean; y: number } {
+  debugInfo(): { phase: string; alive: number; armed: number; landed: boolean; emoting: boolean; wheel: boolean; emoteCooldown: number; camBlend: boolean; y: number; grounded: boolean; locked: boolean } {
     return {
+      grounded: this.controller.grounded,
+      locked: this.input.locked,
       phase: this.phaseState.phase,
       alive: this.bots.aliveCount(),
       armed: this.bots.armedCount(),
